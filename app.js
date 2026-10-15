@@ -43,7 +43,43 @@ function renderCategoryManager(t){$('categoryList').innerHTML=categories(t).map(
 $('addCategory').onclick=()=>openEditor('Kategorie hinzufügen',field('Kategoriename','categoryName',''),f=>{let c=String(f.get('categoryName')).trim();if(!c||c.length>60||categories(active).some(x=>x.toLowerCase()===c.toLowerCase()))return alert('Bitte einen eindeutigen Namen (max. 60 Zeichen) eingeben.');active.categories=[...categories(active),c];save();close();render();});
 $('categoryList').onclick=e=>{let edit=e.target.closest('[data-cat-edit]'),del=e.target.closest('[data-cat-del]');if(edit){let old=categories(active)[Number(edit.dataset.catEdit)];openEditor('Kategorie umbenennen',field('Name','categoryName',old),f=>{let name=String(f.get('categoryName')).trim();if(!name||name.length>60||categories(active).some(c=>c!==old&&c.toLowerCase()===name.toLowerCase()))return alert('Ungültiger oder bereits vorhandener Name.');active.categories=categories(active).map(c=>c===old?name:c);active.expenses.forEach(x=>{if(x.category===old)x.category=name;});save();close();render();});}if(del){let old=categories(active)[Number(del.dataset.catDel)];let used=active.expenses.filter(x=>(x.category||'Diverses')===old).length;if(used)return alert(`Die Kategorie wird in ${used} Ausgaben verwendet. Bitte zuerst umbenennen oder diese Ausgaben einer anderen Kategorie zuordnen.`);if(categories(active).length<=1)return alert('Mindestens eine Kategorie ist erforderlich.');if(confirm('Kategorie „'+old+'“ löschen?')){active.categories=categories(active).filter(c=>c!==old);save();render();}}};
 async function compressReceipt(file){if(!file.type.startsWith('image/'))throw Error('Bitte ein Bild wählen.');if(file.size>15_000_000)throw Error('Originalbild zu gross (max. 15 MB).');const url=URL.createObjectURL(file);try{const img=new Image();img.src=url;await img.decode();const scale=Math.min(1,1100/Math.max(img.naturalWidth,img.naturalHeight));const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);let data=canvas.toDataURL('image/jpeg',0.64);if(data.length>470000)throw Error('Foto nach Komprimierung zu gross. Bitte einen kleineren Ausschnitt wählen.');return data;}finally{URL.revokeObjectURL(url);}}
-$('fetchRates').onclick=async()=>{if(!navigator.onLine)return alert('Offline: Gespeicherte Wechselkurse bleiben gültig.');let btn=$('fetchRates');btn.disabled=true;try{const base=active.currency;const response=await fetch('https://api.frankfurter.dev/v1/latest?base='+encodeURIComponent(base),{cache:'no-store'});if(!response.ok)throw Error('HTTP '+response.status);const data=await response.json();if(!data.rates||!data.date)throw Error('Ungültige Antwort');let updated=0;const next={...active.rates};for(const currency of Object.keys(next)){if(currency===base)continue;const perBase=data.rates[currency];if(Number.isFinite(perBase)&&perBase>0){next[currency]=1/perBase;updated++;}}if(!updated)return alert('Keine passenden Währungen gefunden.');if(!confirm(`Referenzkurse vom ${data.date} übernehmen (${updated} Währungen)? Bereits erfasste Ausgaben bleiben unverändert.`))return;active.rates=next;active.rateDate=data.date;save();render();alert('Kurse aktualisiert.');}catch(err){alert('Abruf fehlgeschlagen: '+err.message+' – manuelle Kurse bleiben erhalten.');}finally{btn.disabled=false;}};
+$('fetchRates').onclick=async()=>{
+  const btn=$('fetchRates'),status=$('rateStatus'),base=active.currency;
+  btn.disabled=true;status.textContent='Wechselkurse werden geladen …';
+  try{
+    const providers=[
+      {name:'Frankfurter',url:'https://api.frankfurter.dev/v1/latest?base='+encodeURIComponent(base)},
+      {name:'Frankfurter (Alternativadresse)',url:'https://api.frankfurter.app/latest?from='+encodeURIComponent(base)}
+    ];
+    let data=null,source='',errors=[];
+    for(const p of providers){
+      try{
+        const response=await fetch(p.url,{cache:'no-store',mode:'cors'});
+        if(!response.ok)throw Error('HTTP '+response.status);
+        const candidate=await response.json();
+        if(!candidate||!candidate.rates||!candidate.date)throw Error('Antwort ohne Kursdaten');
+        data=candidate;source=p.name;break;
+      }catch(err){errors.push(p.name+': '+err.message);}
+    }
+    if(!data)throw Error(errors.join(' / '));
+    const next={...active.rates};let updated=0,unavailable=[];
+    for(const currency of Object.keys(next)){
+      if(currency===base)continue;
+      const perBase=Number(data.rates[currency]);
+      if(Number.isFinite(perBase)&&perBase>0){next[currency]=1/perBase;updated++;}
+      else unavailable.push(currency);
+    }
+    if(!updated){status.textContent='Keine passenden Fremdwährungen im Kursdienst gefunden.';return;}
+    if(!confirm('Referenzkurse vom '+data.date+' übernehmen ('+updated+' Währungen)? Bereits erfasste Ausgaben bleiben unverändert.')){
+      status.textContent='Aktualisierung abgebrochen; bisherige Kurse bleiben erhalten.';return;
+    }
+    active.rates=next;active.rateDate=data.date;save();render();
+    status.textContent='Aktualisiert: '+data.date+' · '+source+' · '+updated+' Währungen'+(unavailable.length?' · Nicht verfügbar: '+unavailable.join(', '):'');
+  }catch(err){
+    status.textContent='Kursabruf fehlgeschlagen: '+err.message+' – gespeicherte Kurse bleiben erhalten.';
+    alert(status.textContent);
+  }finally{btn.disabled=false;}
+};
 function renderStats(t){let byDay={},byPerson={};let sum=0;for(const e of t.expenses){const val=cents(e.amount*e.rate/100);sum+=val;byDay[e.date]=(byDay[e.date]||0)+val;byPerson[e.payer]=(byPerson[e.payer]||0)+val;}$('statsSummary').textContent=`${t.expenses.length} Ausgaben · ${money(sum,t.currency)}${t.budget?' · Budget '+money(t.budget,t.currency)+' · Rest '+money(t.budget-sum,t.currency):''}`;function bars(obj,target,mapLabel){let entries=Object.entries(obj).sort((a,b)=>a[0].localeCompare(b[0]));let max=Math.max(1,...entries.map(([,v])=>v));$(target).innerHTML=entries.map(([k,v])=>`<div class="category"><div><span>${esc(mapLabel(k))}</span><b>${money(v,t.currency)}</b></div><div class="bar"><div style="width:${Math.min(100,100*v/max)}%"></div></div></div>`).join('')||'<p class="muted">Noch keine Ausgaben.</p>';}bars(byDay,'dayChart',x=>x);bars(byPerson,'personChart',x=>nameOf(t,x));}
 function downloadBlob(blob,filename){let url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);}
 $('csvBtn').onclick=()=>{let t=active;let lines=[['Datum','Beschreibung','Kategorie','Bezahlt von','Betrag Original','Währung','Kurs zur Abrechnungswährung','Betrag Abrechnung','Abrechnungswährung','Teilnehmer','Individuelle Aufteilung']];for(const e of t.expenses){lines.push([e.date,e.name,e.category||'Diverses',nameOf(t,e.payer),(e.amount/100).toFixed(2),e.currency,e.rate,(cents(e.amount*e.rate/100)/100).toFixed(2),t.currency,e.shares.map(id=>nameOf(t,id)).join(', '),e.custom?e.shares.map(id=>nameOf(t,id)+': '+(e.custom[id]/100).toFixed(2)).join('; '):'']);}lines.push([]);lines.push(['Offene Überweisungen']);for(const p of compute(t).transfers)lines.push([nameOf(t,p.from),nameOf(t,p.to),(p.cents/100).toFixed(2),t.currency]);lines.push([]);lines.push(['Bereits bezahlte Überweisungen']);for(const p of t.payments||[])lines.push([nameOf(t,p.from),nameOf(t,p.to),(p.cents/100).toFixed(2),t.currency,p.date||'']);const csv='\ufeff'+lines.map(row=>row.map(asCSV).join(';')).join('\r\n');downloadBlob(new Blob([csv],{type:'text/csv;charset=utf-8'}),'ferienkasse-'+today()+'.csv');};
