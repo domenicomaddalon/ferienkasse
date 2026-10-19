@@ -1,86 +1,535 @@
-'use strict';
-const KEY='ferienkasse.pwa.v1';const DEFAULT_CATEGORIES=['Restaurant','Unterkunft','Einkauf','Transport','Aktivitäten','Diverses'];const categories=t=>Array.isArray(t.categories)&&t.categories.length?t.categories:DEFAULT_CATEGORIES;const asCSV=v=>'"'+String(v??'').replace(/"/g,'""')+'"';const $=id=>document.getElementById(id);const uid=()=>crypto.randomUUID();const today=()=>new Date().toLocaleDateString('en-CA');const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const money=(c,cur)=>new Intl.NumberFormat('de-CH',{style:'currency',currency:cur}).format(c/100);const cents=x=>Math.round(Number(x)*100);const safeCurrency=x=>/^[A-Z]{3}$/.test(x);let state,active,tab='expenses',editorSave=null;
-function initial(){let ids=Array.from({length:5},uid);let t={id:uid(),name:'Unsere Ferien',date:today(),currency:'CHF',people:ids.map((id,i)=>({id,name:['Person 1','Person 2','Person 3','Person 4','Person 5'][i]})),rates:{CHF:1,EUR:0.95,USD:0.82},categories:[...DEFAULT_CATEGORIES],budget:0,expenses:[],payments:[]};return {version:1,active:t.id,trips:[t]};}
-function valid(s){if(!s||s.version!==1||!Array.isArray(s.trips)||s.trips.length>200)return false;return s.trips.every(t=>t&&typeof t.id==='string'&&typeof t.name==='string'&&safeCurrency(t.currency)&&Array.isArray(t.people)&&t.people.length<=100&&t.people.every(p=>p&&typeof p.id==='string'&&typeof p.name==='string')&&t.rates&&typeof t.rates==='object'&&Object.entries(t.rates).every(([c,r])=>safeCurrency(c)&&Number.isFinite(r)&&r>0)&&(!t.categories||Array.isArray(t.categories)&&t.categories.length<=100&&t.categories.every(c=>typeof c==='string'&&c.length>0&&c.length<=60))&&(!t.budget||Number.isSafeInteger(t.budget)&&t.budget>=0)&&Array.isArray(t.expenses)&&t.expenses.length<=50000&&(!t.payments||Array.isArray(t.payments)&&t.payments.every(p=>p&&typeof p.from==='string'&&typeof p.to==='string'&&Number.isSafeInteger(p.cents)&&p.cents>0))&&t.expenses.every(e=>e&&typeof e.id==='string'&&typeof e.name==='string'&&typeof e.payer==='string'&&typeof e.currency==='string'&&safeCurrency(e.currency)&&Number.isSafeInteger(e.amount)&&e.amount>0&&Number.isFinite(e.rate)&&e.rate>0&&Array.isArray(e.shares)&&e.shares.length>0&&e.shares.every(a=>typeof a==='string')&&(!e.receipt||typeof e.receipt==='string'&&e.receipt.length<500000)&&(!e.custom||typeof e.custom==='object'&&e.shares.every(id=>Number.isSafeInteger(e.custom[id])&&e.custom[id]>=0)&&e.shares.reduce((sum,id)=>sum+e.custom[id],0)===e.amount)));}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(state));}catch(e){alert('Speichern fehlgeschlagen. Bitte Speicherplatz prüfen und Backup erstellen.');throw e;}}
-let raw=localStorage.getItem(KEY);if(raw!==null){try{state=JSON.parse(raw);}catch{throw Error('Gespeicherte Daten konnten nicht gelesen werden. Es wurde nichts überschrieben.');}if(!valid(state)||!state.trips.length)throw Error('Gespeicherte Daten sind ungültig. Es wurde nichts überschrieben.');}else{state=initial();save();}active=state.trips.find(t=>t.id===state.active)||state.trips[0];
-function showNotice(s){$('notice').innerHTML=s?`<div class="notice">${esc(s)}</div>`:'';}
-function allocations(e){if(e.custom)return e.shares.map(id=>({id,cents:e.custom[id]}));const n=e.shares.length,base=Math.floor(e.amount/n),rem=e.amount%n;return e.shares.map((id,i)=>({id,cents:base+(i<rem?1:0)}));}
-// The original amount is split in its original currency before each share is converted.
-function distribute(e){const total=cents(e.amount*e.rate/100);const parts=allocations(e);let vals=parts.map(a=>({id:a.id,amount:a.cents*e.rate}));let base=vals.map(v=>Math.floor(v.amount));let remaining=total-base.reduce((a,b)=>a+b,0);let order=vals.map((v,i)=>({i,fract:v.amount-base[i]})).sort((a,b)=>b.fract-a.fract||a.i-b.i);for(let j=0;j<remaining;j++)base[order[j%order.length].i]++;return vals.map((v,i)=>({id:v.id,cents:base[i]}));}
-function compute(t){const balances=Object.fromEntries(t.people.map(p=>[p.id,0]));let total=0;for(const e of t.expenses){let amt=cents(e.amount*e.rate/100);total+=amt;if(balances[e.payer]===undefined)continue;balances[e.payer]+=amt;for(const s of distribute(e))if(balances[s.id]!==undefined)balances[s.id]-=s.cents;}for(const p of (t.payments||[])){if(balances[p.from]!==undefined&&balances[p.to]!==undefined){balances[p.from]+=p.cents;balances[p.to]-=p.cents;}}let debt=Object.entries(balances).filter(([,v])=>v<0).map(([id,v])=>({id,v:-v})).sort((a,b)=>b.v-a.v);let credit=Object.entries(balances).filter(([,v])=>v>0).map(([id,v])=>({id,v})).sort((a,b)=>b.v-a.v);let transfers=[],i=0,j=0;while(i<debt.length&&j<credit.length){let a=Math.min(debt[i].v,credit[j].v);if(a>0)transfers.push({from:debt[i].id,to:credit[j].id,cents:a});debt[i].v-=a;credit[j].v-=a;if(!debt[i].v)i++;if(!credit[j].v)j++;}return {balances,total,transfers};}
-function nameOf(t,id){return t.people.find(p=>p.id===id)?.name||'Unbekannt';}
-function render(){active=state.trips.find(t=>t.id===state.active)||state.trips[0];$('tripSelect').innerHTML=state.trips.map(t=>`<option value="${esc(t.id)}" ${t.id===active.id?'selected':''}>${esc(t.name)}</option>`).join('');$('tripMeta').textContent=`${active.date||'Ohne Datum'} · Abrechnung in ${active.currency}`;const result=compute(active);$('summary').innerHTML=`<div class="stat"><span>Gesamtausgaben</span><strong>${money(result.total,active.currency)}</strong></div><div class="stat"><span>Ausgaben</span><strong>${active.expenses.length}</strong></div><div class="stat"><span>Überweisungen</span><strong>${result.transfers.length}</strong></div>`;
-$('expenseList').innerHTML=active.expenses.length?active.expenses.slice().sort((a,b)=>b.date.localeCompare(a.date)).map(e=>`<div class="item"><div><b>${esc(e.name)}</b><div class="sub">${esc(e.date)} · ${esc(nameOf(active,e.payer))} · ${e.shares.length} Pers. · ${esc(e.category||'Diverses')} · Kurs ${e.rate}</div></div><div><div class="money">${money(e.amount,e.currency)}</div><div class="sub">≈ ${money(cents(e.amount*e.rate/100),active.currency)}</div><button class="secondary" data-edit="${esc(e.id)}">Ändern</button>${e.receipt?`<button class="secondary" data-receipt="${esc(e.id)}">Beleg</button>`:""}<button class="secondary" data-remove="${esc(e.id)}">✕</button></div></div>`).join(''):'<p class="muted">Noch keine Ausgaben erfasst.</p>';
-$('peopleList').innerHTML=active.people.map(p=>`<div class="item"><div><b>${esc(p.name)}</b><div class="sub">Saldo: <span class="${result.balances[p.id]>=0?'positive':'negative'}">${money(result.balances[p.id],active.currency)}</span></div></div><div><button class="secondary" data-person-edit="${esc(p.id)}">Ändern</button><button class="secondary" data-person-remove="${esc(p.id)}">✕</button></div></div>`).join('');
-$('rateList').innerHTML=Object.entries(active.rates).sort(([a],[b])=>a.localeCompare(b)).map(([c,r])=>`<div class="item"><div><b>${esc(c)}</b><div class="sub">1 ${esc(c)} = ${r} ${esc(active.currency)}${c===active.currency?' (Basis)':''}</div></div>${c===active.currency?'':`<button class="secondary" data-rate="${esc(c)}">Kurs ändern</button>`}</div>`).join('');
-$('balanceList').innerHTML=active.people.map(p=>`<div class="item"><span>${esc(p.name)}</span><b class="${result.balances[p.id]>=0?'positive':'negative'}">${result.balances[p.id]>0?'+':''}${money(result.balances[p.id],active.currency)}</b></div>`).join('');$('transferList').innerHTML=result.transfers.length?result.transfers.map((x,i)=>`<div class="item"><span>${esc(nameOf(active,x.from))} → ${esc(nameOf(active,x.to))}</span><div><b>${money(x.cents,active.currency)}</b> <button class="secondary" data-pay="${i}">Als bezahlt markieren</button></div></div>`).join(''):'<p class="muted">Keine offenen Zahlungen.</p>';$('paymentList').innerHTML=(active.payments||[]).length?(active.payments||[]).map((p,i)=>`<div class="item"><span>${esc(nameOf(active,p.from))} → ${esc(nameOf(active,p.to))}<div class="sub">${esc(p.date||'')}</div></span><div><b>${money(p.cents,active.currency)}</b><button class="secondary" data-undo="${i}">Rückgängig</button></div></div>`).join(''):'<p class="muted">Noch keine Zahlungen erfasst.</p>';renderCategories(active);renderStats(active);renderCategoryManager(active);document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('hidden',p.id!==tab));document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));}
-function openEditor(title,fields,onSave){$('editorTitle').textContent=title;$('editorFields').innerHTML=fields;editorSave=onSave;$('editor').showModal();}
-function close(){ $('editor').close();editorSave=null;}
-$('closeEditor').onclick=close;$('cancelEditor').onclick=close;$('editorForm').addEventListener('submit',e=>{e.preventDefault();if(editorSave)editorSave(new FormData(e.currentTarget));});
-function field(label,id,value='',type='text',extra=''){return `<label>${esc(label)}<input id="${id}" name="${id}" type="${type}" value="${esc(value)}" ${extra} required></label>`;}
-function selectField(label,id,options,value){return `<label>${esc(label)}<select name="${id}" id="${id}">${options.map(([v,n])=>`<option value="${esc(v)}" ${v===value?'selected':''}>${esc(n)}</option>`).join('')}</select></label>`;}
-$('editTrip').onclick=()=>openEditor('Reise bearbeiten',field('Reisename','name',active.name)+field('Startdatum','date',active.date,'date')+field('Ferienbudget in '+active.currency,'budget',((active.budget||0)/100).toFixed(2),'number','min="0" step="0.01"'),f=>{const name=String(f.get('name')).trim();if(!name)return;active.name=name;active.date=f.get('date');active.budget=cents(f.get('budget')||0);save();close();render();});
-$('newTrip').onclick=()=>openEditor('Neue Reise',field('Reisename','name','Neue Ferien')+field('Startdatum','date',today(),'date')+selectField('Abrechnungswährung','currency',['CHF','EUR','USD','GBP','SEK','NOK','DKK','CZK','JPY'].map(c=>[c,c]),'CHF'),f=>{let ids=Array.from({length:5},uid),currency=f.get('currency');let t={id:uid(),name:f.get('name').trim(),date:f.get('date'),currency,people:ids.map((id,i)=>({id,name:`Person ${i+1}`})),rates:{[currency]:1},categories:[...DEFAULT_CATEGORIES],budget:0,expenses:[],payments:[]};if(!t.name)return;state.trips.push(t);state.active=t.id;save();close();render();showNotice('Reise erstellt. Bitte Teilnehmernamen und gegebenenfalls Wechselkurse festlegen.');});
-$('tripSelect').onchange=e=>{state.active=e.target.value;save();render();};document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;render();});
-$('addPerson').onclick=()=>openPerson();function openPerson(p){openEditor(p?'Person bearbeiten':'Person hinzufügen',field('Name','name',p?.name||''),f=>{let name=f.get('name').trim();if(!name)return;if(p)p.name=name;else active.people.push({id:uid(),name});save();close();render();});}
-$('peopleList').onclick=e=>{let edit=e.target.closest('[data-person-edit]'),remove=e.target.closest('[data-person-remove]');if(edit)openPerson(active.people.find(p=>p.id===edit.dataset.personEdit));if(remove){let id=remove.dataset.personRemove;if(active.expenses.some(e=>e.payer===id||e.shares.includes(id)))return alert('Diese Person kommt in Ausgaben vor und kann nicht gelöscht werden.');if(active.people.length<=1)return alert('Mindestens eine Person ist erforderlich.');if(confirm('Person löschen?')){active.people=active.people.filter(p=>p.id!==id);save();render();}}};
-$('addRate').onclick=()=>openEditor('Währung hinzufügen',field('ISO-Währungscode (z. B. EUR)','code','EUR','text','maxlength="3"')+field(`Kurs: 1 Fremdwährung in ${active.currency}`,'rate','1','number','min="0.00000001" step="any"'),f=>{let c=f.get('code').trim().toUpperCase(),r=Number(f.get('rate'));if(!safeCurrency(c)||!Number.isFinite(r)||r<=0)return alert('Gültigen dreistelligen Währungscode und positiven Kurs eingeben.');if(c===active.currency)r=1;active.rates[c]=r;save();close();render();});
-$('rateList').onclick=e=>{let b=e.target.closest('[data-rate]');if(!b)return;let c=b.dataset.rate;openEditor(`Wechselkurs ${c}`,field(`1 ${c} in ${active.currency}`,'rate',active.rates[c],'number','min="0.00000001" step="any"'),f=>{let r=Number(f.get('rate'));if(!Number.isFinite(r)||r<=0)return alert('Ungültiger Wechselkurs.');active.rates[c]=r;save();close();render();});};
-function openExpense(e){if(!active.people.length)return alert('Bitte zuerst Personen hinzufügen.');const currencies=Object.keys(active.rates);const selected=e?.shares||active.people.map(p=>p.id);let html=field('Beschreibung','name',e?.name||'')+field('Datum','date',e?.date||today(),'date')+field('Betrag','amount',e?(e.amount/100).toFixed(2):'','number','min="0.01" step="0.01"')+selectField('Währung','currency',currencies.map(c=>[c,c]),e?.currency||active.currency)+selectField('Kategorie','category',[...new Set([...categories(active),e?.category].filter(Boolean))].map(c=>[c,c]),e?.category||'Diverses')+selectField('Bezahlt von','payer',active.people.map(p=>[p.id,p.name]),e?.payer||active.people[0].id)+selectField('Aufteilung','splitMode',[['equal','Gleichmässig'],['custom','Individuelle Beträge']],e?.custom?'custom':'equal')+`<label>Belegfoto (optional, max. 350 KB nach Verkleinerung)<input type="file" name="receiptFile" accept="image/*" capture="environment"></label>${e?.receipt?'<p class="muted">Beleg vorhanden. Neues Foto ersetzt den bisherigen Beleg.</p><label><input type="checkbox" name="removeReceipt"> Beleg entfernen</label>':''}<label>Aufteilen zwischen</label><div class="checkgrid">${active.people.map(p=>`<label><input type="checkbox" name="shares" value="${esc(p.id)}" ${selected.includes(p.id)?'checked':''}>${esc(p.name)}</label>`).join('')}</div><div class="customshares"><p class="muted">Bei individueller Aufteilung die Beträge in der Originalwährung angeben. Die Summe muss dem Gesamtbetrag entsprechen.</p>${active.people.map(p=>`<label>${esc(p.name)}<input type="number" step="0.01" min="0" name="custom_${esc(p.id)}" value="${e?.custom?(e.custom[p.id]||0)/100:0}"></label>`).join('')}</div><p class="muted">Der Kurs wird beim Speichern fest in dieser Ausgabe hinterlegt.</p>`;openEditor(e?'Ausgabe bearbeiten':'Ausgabe hinzufügen',html,async f=>{let name=f.get('name').trim(),amount=Number(f.get('amount')),currency=f.get('currency'),shares=f.getAll('shares'),payer=f.get('payer'),category=f.get('category');if(!name||!Number.isFinite(amount)||amount<=0||!Number.isSafeInteger(cents(amount))||cents(amount)<=0||!shares.length)return alert('Beschreibung, gültigen Betrag und mindestens einen Teilnehmer eingeben.');let rate=active.rates[currency];if(!rate)return alert('Wechselkurs fehlt.');let custom; if(f.get('splitMode')==='custom'){custom={};for(const id of shares){let value=Number(f.get('custom_'+id));if(!Number.isFinite(value)||value<0||Math.abs(value*100-Math.round(value*100))>0.00001)return alert('Ungültiger individueller Betrag.');custom[id]=cents(value);}if(Object.values(custom).reduce((a,b)=>a+b,0)!==cents(amount))return alert('Die individuellen Anteile müssen zusammen genau dem Gesamtbetrag entsprechen.');}let record={id:e?.id||uid(),name,date:f.get('date'),amount:cents(amount),currency,rate,payer,shares,category};try{const photo=f.get('receiptFile');if(photo&&photo.size)record.receipt=await compressReceipt(photo);else if(e?.receipt&&!f.get('removeReceipt'))record.receipt=e.receipt;}catch(err){return alert('Beleg konnte nicht verarbeitet werden: '+err.message);}if(custom)record.custom=custom;if(e){delete e.custom;Object.assign(e,record);}else active.expenses.push(record);save();close();render();});}
-$('addExpense').onclick=()=>openExpense();$('expenseList').onclick=e=>{let edit=e.target.closest('[data-edit]'),remove=e.target.closest('[data-remove]');if(edit)openExpense(active.expenses.find(x=>x.id===edit.dataset.edit));let receipt=e.target.closest('[data-receipt]');if(receipt){let x=active.expenses.find(x=>x.id===receipt.dataset.receipt);if(x?.receipt){let w=window.open();if(w){w.document.write('<title>Beleg</title><img alt="Beleg" style="max-width:100%" src="'+x.receipt+'">');w.document.close();}else alert('Bitte Pop-ups erlauben, um den Beleg zu öffnen.');}}if(remove&&confirm('Ausgabe wirklich löschen?')){active.expenses=active.expenses.filter(x=>x.id!==remove.dataset.remove);save();render();}};
-function settlementText(){let r=compute(active);return `Ferienkasse: ${active.name}\nAbrechnungswährung: ${active.currency}\nGesamtausgaben: ${money(r.total,active.currency)}\n\nSalden:\n${active.people.map(p=>`${p.name}: ${money(r.balances[p.id],active.currency)}`).join('\n')}\n\nÜberweisungen:\n${r.transfers.map(t=>`${nameOf(active,t.from)} bezahlt ${nameOf(active,t.to)}: ${money(t.cents,active.currency)}`).join('\n')||'Keine'}\n`;}
-$('transferList').onclick=e=>{let b=e.target.closest('[data-pay]');if(!b)return;const t=compute(active).transfers[Number(b.dataset.pay)];if(!t)return;if(!confirm(`${nameOf(active,t.from)} hat ${money(t.cents,active.currency)} an ${nameOf(active,t.to)} bezahlt?`))return;(active.payments??=[]).push({...t,date:today()});save();render();};$('paymentList').onclick=e=>{let b=e.target.closest('[data-undo]');if(!b)return;if(!confirm('Zahlungsbestätigung rückgängig machen?'))return;active.payments.splice(Number(b.dataset.undo),1);save();render();};
-$('shareBtn').onclick=async()=>{let text=settlementText();try{if(navigator.share)await navigator.share({title:'Ferienkasse',text});else{await navigator.clipboard.writeText(text);alert('Abrechnung kopiert.');}}catch(e){if(e.name!=='AbortError')alert('Teilen nicht möglich.');}};
-$('pdfBtn').onclick=()=>{let r=compute(active);$('printArea').innerHTML=`<h1>Ferienkasse – ${esc(active.name)}</h1><p>Datum: ${esc(active.date)} · Abrechnungswährung: ${esc(active.currency)} · Gesamtausgaben: ${money(r.total,active.currency)}</p><h2>Ausgaben</h2><table><tr><th>Datum</th><th>Ausgabe</th><th>Bezahlt von</th><th>Original</th><th>Abrechnung</th></tr>${active.expenses.map(e=>`<tr><td>${esc(e.date)}</td><td>${esc(e.name)} (${esc(e.category||'Diverses')})</td><td>${esc(nameOf(active,e.payer))}</td><td>${money(e.amount,e.currency)}</td><td>${money(cents(e.amount*e.rate/100),active.currency)}</td></tr>`).join('')}</table><h2>Salden</h2><table>${active.people.map(p=>`<tr><td>${esc(p.name)}</td><td>${money(r.balances[p.id],active.currency)}</td></tr>`).join('')}</table><h2>Offene Überweisungen</h2><table>${r.transfers.map(t=>`<tr><td>${esc(nameOf(active,t.from))} → ${esc(nameOf(active,t.to))}</td><td>${money(t.cents,active.currency)}</td></tr>`).join('')||'<tr><td>Keine offenen Überweisungen</td></tr>'}</table><h2>Bereits bezahlte Überweisungen</h2><table>${(active.payments||[]).map(p=>`<tr><td>${esc(nameOf(active,p.from))} → ${esc(nameOf(active,p.to))}</td><td>${money(p.cents,active.currency)}</td></tr>`).join('')}</table><p>Erstellt mit Ferienkasse. Wechselkurse wurden bei Erfassung der Ausgaben fixiert.</p>`;window.print();};
-function renderCategories(t){const totals={};for(const e of t.expenses){const k=e.category||'Diverses';totals[k]=(totals[k]||0)+cents(e.amount*e.rate/100);}const max=Math.max(1,...Object.values(totals));$('categoryChart').innerHTML=Object.entries(totals).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="category"><div><span>${esc(k)}</span><b>${money(v,t.currency)}</b></div><div class="bar"><div style="width:${Math.max(0,Math.min(100,v/max*100))}%"></div></div></div>`).join('')||'<p class="muted">Noch keine Ausgaben.</p>';}
-function backup(){let blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`ferienkasse-backup-${today()}.json`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);}
-$('exportBtn').onclick=backup;$('backupTop').onclick=()=>{tab='settings';render();backup();};$('importFile').onchange=async e=>{let file=e.target.files[0];if(!file)return;try{if(file.size>15_000_000)throw Error('Datei zu gross');let obj=JSON.parse(await file.text());if(!valid(obj))throw Error('Ungültiges Backup-Format');if(!confirm('Alle vorhandenen Reisen durch dieses Backup ersetzen?'))return;if(!obj.trips.length)throw Error('Backup enthält keine Reisen');const previous=state;state=obj;state.active=state.trips.some(t=>t.id===state.active)?state.active:state.trips[0].id;try{save();}catch(err){state=previous;throw err;}render();alert('Backup erfolgreich wiederhergestellt.');}catch(err){alert('Wiederherstellung fehlgeschlagen: '+err.message);}finally{e.target.value='';}};
-$('backupCheck').onclick=()=>{let data=JSON.parse(JSON.stringify(state));alert(valid(data)?'Backup-Struktur ist gültig. Für einen vollständigen Test exportieren und anschliessend importieren.':'Fehler in der Datenstruktur. Bitte vor einem Update Hilfe holen.');};
-$('deleteTrip').onclick=()=>{if(!confirm(`Reise „${active.name}“ und sämtliche Ausgaben endgültig löschen?`))return;state.trips=state.trips.filter(t=>t.id!==active.id);if(!state.trips.length)state=initial();state.active=state.trips[0].id;save();render();};
-// v1.2: category management, receipts, FX, statistics and spreadsheet export.
-function renderCategoryManager(t){$('categoryList').innerHTML=categories(t).map((c,i)=>`<div class="item"><span>${esc(c)}</span><div><button class="secondary" data-cat-edit="${i}">Umbenennen</button><button class="secondary" data-cat-del="${i}">Löschen</button></div></div>`).join('');}
-$('addCategory').onclick=()=>openEditor('Kategorie hinzufügen',field('Kategoriename','categoryName',''),f=>{let c=String(f.get('categoryName')).trim();if(!c||c.length>60||categories(active).some(x=>x.toLowerCase()===c.toLowerCase()))return alert('Bitte einen eindeutigen Namen (max. 60 Zeichen) eingeben.');active.categories=[...categories(active),c];save();close();render();});
-$('categoryList').onclick=e=>{let edit=e.target.closest('[data-cat-edit]'),del=e.target.closest('[data-cat-del]');if(edit){let old=categories(active)[Number(edit.dataset.catEdit)];openEditor('Kategorie umbenennen',field('Name','categoryName',old),f=>{let name=String(f.get('categoryName')).trim();if(!name||name.length>60||categories(active).some(c=>c!==old&&c.toLowerCase()===name.toLowerCase()))return alert('Ungültiger oder bereits vorhandener Name.');active.categories=categories(active).map(c=>c===old?name:c);active.expenses.forEach(x=>{if(x.category===old)x.category=name;});save();close();render();});}if(del){let old=categories(active)[Number(del.dataset.catDel)];let used=active.expenses.filter(x=>(x.category||'Diverses')===old).length;if(used)return alert(`Die Kategorie wird in ${used} Ausgaben verwendet. Bitte zuerst umbenennen oder diese Ausgaben einer anderen Kategorie zuordnen.`);if(categories(active).length<=1)return alert('Mindestens eine Kategorie ist erforderlich.');if(confirm('Kategorie „'+old+'“ löschen?')){active.categories=categories(active).filter(c=>c!==old);save();render();}}};
-async function compressReceipt(file){if(!file.type.startsWith('image/'))throw Error('Bitte ein Bild wählen.');if(file.size>15_000_000)throw Error('Originalbild zu gross (max. 15 MB).');const url=URL.createObjectURL(file);try{const img=new Image();img.src=url;await img.decode();const scale=Math.min(1,1100/Math.max(img.naturalWidth,img.naturalHeight));const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);let data=canvas.toDataURL('image/jpeg',0.64);if(data.length>470000)throw Error('Foto nach Komprimierung zu gross. Bitte einen kleineren Ausschnitt wählen.');return data;}finally{URL.revokeObjectURL(url);}}
-$('fetchRates').onclick=async()=>{
-  const btn=$('fetchRates'),status=$('rateStatus'),base=active.currency;
-  btn.disabled=true;status.textContent='Wechselkurse werden geladen …';
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './supabase/project-config.js';
+const client=createClient(SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY,{auth:{flowType:'implicit',storageKey:'ferienkasse.v1.3.auth.test',detectSessionInUrl:true}});
+const $=id=>document.getElementById(id);
+let selected=null, people=[], editingExpenseId=null, splits=[], payments=[], categories=[], rates=[];
+let realtimeChannel=null,realtimeTripId=null,realtimeTimer=null,realtimeLoading=false,realtimeQueued=false;
+
+let activeView='expenses',reportExpenses=[];
+function showView(view){
+ if(!['expenses','new','balances','payments','people','categories','rates'].includes(view))return;
+ activeView=view;
+ for(const panel of document.querySelectorAll('[data-panel]'))panel.hidden=panel.dataset.panel!==view;
+ for(const button of document.querySelectorAll('[data-view]')){
+  const active=button.dataset.view===view;
+  button.classList.toggle('active',active);
+  button.setAttribute('aria-pressed',String(active));
+ }
+}
+for(const button of document.querySelectorAll('[data-view]'))button.addEventListener('click',()=>showView(button.dataset.view));
+showView('expenses');
+$('newExpense').addEventListener('click',()=>showView('new'));
+$('toggleExpenses').addEventListener('click',()=>{const list=$('expenses');list.hidden=!list.hidden;$('toggleExpenses').textContent=list.hidden?'Erfasste Ausgaben anzeigen':'Erfasste Ausgaben ausblenden';$('toggleExpenses').setAttribute('aria-expanded',String(!list.hidden));});
+function printReport(){
+ if(!selected)return;
+ const area=$('printArea');area.replaceChildren();
+ const add=(tag,value,parent=area,cls='')=>{const el=document.createElement(tag);el.textContent=String(value);if(cls)el.className=cls;parent.append(el);return el;};
+ const money=c=>(c/100).toLocaleString('de-CH',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+selected.currency;
+ const name=id=>people.find(p=>p.id===id)?.name||'Unbekannt';
+ const table=(headers,rows)=>{
+  const t=document.createElement('table'),thead=document.createElement('thead'),tr=document.createElement('tr');
+  for(const title of headers)add('th',title,tr);
+  thead.append(tr);t.append(thead);const tbody=document.createElement('tbody');
+  for(const values of rows){const row=document.createElement('tr');for(const value of values)add('td',value,row);tbody.append(row);}
+  t.append(tbody);area.append(t);
+ };
+ const expenses=reportExpenses;
+ const total=expenses.reduce((sum,e)=>sum+e.amount_cents,0);
+ const byCategory=new Map(),byPayer=new Map();
+ for(const e of expenses){
+  const category=e.category||'Diverses';
+  byCategory.set(category,(byCategory.get(category)||0)+e.amount_cents);
+  const payer=name(e.person_id);byPayer.set(payer,(byPayer.get(payer)||0)+e.amount_cents);
+ }
+ const colors=['#176f86','#3c86b1','#e7a94b','#568b66','#9a70b3','#cc6f67','#6989a1','#b5a05a','#777d90'];
+ const breakdown=(title,entries,chartType)=>{
+  add('h2',title);
+  if(!entries.length){add('p','Keine Ausgaben vorhanden.');return;}
+  const section=document.createElement('div');section.className='report-chart';area.append(section);
+  const max=Math.max(...entries.map(x=>x[1]),1);
+  const totalAmount=entries.reduce((sum,x)=>sum+x[1],0);
+  if(chartType==='donut'&&totalAmount>0){
+   const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+   svg.setAttribute('viewBox','0 0 180 180');svg.setAttribute('role','img');svg.setAttribute('aria-label','Kategorienanteile als Kreisdiagramm');svg.classList.add('report-donut');
+   let offset=0;
+   entries.forEach(([label,value],i)=>{
+    const circle=document.createElementNS('http://www.w3.org/2000/svg','circle');
+    circle.setAttribute('cx','90');circle.setAttribute('cy','90');circle.setAttribute('r','65');
+    circle.setAttribute('fill','none');circle.setAttribute('stroke',colors[i%colors.length]);
+    circle.setAttribute('stroke-width','28');circle.setAttribute('pathLength','100');
+    circle.setAttribute('stroke-dasharray',(value/totalAmount*100)+' '+(100-value/totalAmount*100));
+    circle.setAttribute('stroke-dashoffset',String(-offset));
+    circle.setAttribute('transform','rotate(-90 90 90)');
+    svg.append(circle);offset+=value/totalAmount*100;
+   });
+   const center=document.createElementNS('http://www.w3.org/2000/svg','text');
+   center.setAttribute('x','90');center.setAttribute('y','91');center.setAttribute('text-anchor','middle');
+   center.setAttribute('font-size','15');center.setAttribute('font-weight','bold');center.setAttribute('fill','#17324d');
+   center.textContent='100 %';svg.append(center);section.append(svg);
+  }
+  const rows=add('div','',section,'report-chart-rows');
+  entries.forEach(([label,value],i)=>{
+   const row=add('div','',rows,'report-chart-row');
+   const top=add('div','',row,'report-chart-label');
+   const left=add('span',label,top);
+   left.style.borderLeft='9px solid '+colors[i%colors.length];left.style.paddingLeft='7px';
+   add('strong',money(value)+' · '+(totalAmount? (value/totalAmount*100).toLocaleString('de-CH',{maximumFractionDigits:1}):'0')+' %',top);
+   const track=add('div','',row,'report-chart-track');
+   const bar=add('div','',track,'report-chart-bar');
+   bar.style.width=(value/max*100)+'%';bar.style.backgroundColor=colors[i%colors.length];
+  });
+ };
+ add('h1','Ferienkasse · '+selected.name);
+ add('p','Abrechnung in '+selected.currency+' · '+new Date().toLocaleDateString('de-CH'),area,'report-meta');
+ const stats=add('div','',area,'report-summary');
+ const summary=(title,value)=>{const block=add('div','',stats,'report-summary-item');add('span',title,block);add('strong',value,block);};
+ summary('Gesamtausgaben',money(total));summary('Ausgaben',expenses.length);summary('Teilnehmende',people.length);
+ const categoryEntries=[...byCategory].sort((a,b)=>b[1]-a[1]);
+ const payerEntries=[...byPayer].sort((a,b)=>b[1]-a[1]);
+ breakdown('Ausgaben nach Kategorien',categoryEntries,'donut');
+ breakdown('Ausgaben nach zahlender Person',payerEntries,'bar');
+ add('h2','Einzelne Ausgaben');
+ table(['Datum','Beschreibung','Kategorie','Bezahlt von','Betrag','Kostenaufteilung'],expenses.map(e=>{
+  const portions=splits.filter(x=>x.expense_id===e.id);
+  return [e.expense_date,e.description,e.category||'Diverses',name(e.person_id),money(e.amount_cents)+(e.original_currency&&e.original_currency!==selected.currency?' (Original: '+(e.original_amount_cents/100).toFixed(2)+' '+e.original_currency+', Kurs '+e.exchange_rate+')':''),portions.length?portions.map(p=>name(p.person_id)+': '+money(p.amount_cents)).join('; '):'Nicht zugeordnet'];
+ }));
+ const balance=new Map(people.map(p=>[p.id,{paid:0,share:0}]));
+ let excluded=0;
+ for(const e of expenses){
+  const portions=splits.filter(x=>x.expense_id===e.id);
+  if(!portions.length||portions.reduce((sum,x)=>sum+x.amount_cents,0)!==e.amount_cents||!balance.has(e.person_id)||portions.some(x=>!balance.has(x.person_id))){excluded+=e.amount_cents;continue;}
+  balance.get(e.person_id).paid+=e.amount_cents;
+  for(const p of portions)balance.get(p.person_id).share+=p.amount_cents;
+ }
+ for(const p of payments)if(balance.has(p.from_person_id)&&balance.has(p.to_person_id)){
+  balance.get(p.from_person_id).paid+=p.amount_cents;balance.get(p.to_person_id).paid-=p.amount_cents;
+ }
+ add('h2','Salden pro Person');
+ if(excluded)add('p','Hinweis: '+money(excluded)+' ohne gültige Kostenaufteilung sind in den Salden nicht berücksichtigt.');
+ table(['Person','Netto bezahlt inkl. Ausgleich','Kostenanteil','Offener Saldo'],people.map(p=>{
+  const b=balance.get(p.id);return[p.name,money(b.paid),money(b.share),money(b.paid-b.share)];
+ }));
+ add('h2','Offene Ausgleichszahlungen');
+ const suggested=Array.from($('settlements').querySelectorAll('.item')).map(el=>[el.querySelector('strong')?.textContent||'',el.querySelector('.sub')?.textContent||'']);
+ table(['Überweisung','Betrag'],suggested);
+ add('h2','Bereits erfasste Ausgleichszahlungen');
+ table(['Datum','Von','An','Betrag'],payments.map(p=>[p.paid_on,name(p.from_person_id),name(p.to_person_id),money(p.amount_cents)]));
+ window.print();
+}
+$('pdfBtn').addEventListener('click',printReport);
+
+
+/* v20: sichere lokale Vorschau von 1.2.1-JSON; keine Datenbank-Schreibzugriffe */
+let importBackup=null;
+const importFile=$('importFile'),importTrip=$('importTrip'),importPreview=$('importPreview');
+const previewMoney=(c,cur)=>(c/100).toLocaleString('de-CH',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+cur;
+function renderImportPreview(){
+ $('importExecute').disabled=true;$('importStatus').textContent='';
+ importPreview.replaceChildren();
+ const trip=importBackup?.trips?.[Number(importTrip.value)];
+ if(!trip)return;
+ const info=document.createElement('div');info.className='import-review';importPreview.append(info);
+ const add=(label,value)=>{const p=document.createElement('p');const b=document.createElement('strong');b.textContent=label+': ';p.append(b,document.createTextNode(String(value)));info.append(p);};
+ const names=new Set(trip.people.map(p=>p.id));
+ const invalid=trip.expenses.filter(e=>!names.has(e.payer)||!Array.isArray(e.shares)||!e.shares.length||e.shares.some(id=>!names.has(id))||new Set(e.shares).size!==e.shares.length||!Number.isSafeInteger(e.amount)||e.amount<=0||!Number.isFinite(e.rate)||e.rate<=0||!Number.isFinite(e.amount*e.rate)||!Number.isSafeInteger(Math.round(e.amount*e.rate))||e.currency===trip.currency&&e.rate!==1||e.custom&&Object.keys(e.custom).length>0);
+ const converted=trip.expenses.map(e=>Math.round(e.amount*e.rate));
+ const sum=converted.reduce((a,b)=>a+b,0);
+ add('Reise',trip.name);
+ add('Teilnehmende',trip.people.length);
+ add('Ausgaben',trip.expenses.length);
+ add('Kategorien',(trip.categories||[]).join(', ')||'Keine');
+ add('Zielwährung',trip.currency);
+ add('Gesamtbetrag (umgerechnet)',previewMoney(sum,trip.currency));
+ const currencies=[...new Set(trip.expenses.map(e=>e.currency))];
+ add('Erfasste Währungen',currencies.join(', ')||'Keine');
+ const table=document.createElement('table'),head=document.createElement('tr');
+ for(const label of ['Ausgabe','Originalbetrag','Kurs','Betrag in '+trip.currency]){const th=document.createElement('th');th.textContent=label;head.append(th);}
+ table.append(head);
+ for(let i=0;i<trip.expenses.length;i++){
+  const e=trip.expenses[i],tr=document.createElement('tr');
+  for(const value of [e.name,previewMoney(e.amount,e.currency),e.rate,previewMoney(converted[i],trip.currency)]){const td=document.createElement('td');td.textContent=String(value);tr.append(td);}
+  table.append(tr);
+ }
+ info.append(table);
+ const note=document.createElement('p');note.className=invalid.length?'negative':'muted';
+ const validPeople=trip.people.length>0&&new Set(trip.people.map(p=>p.id)).size===trip.people.length&&trip.people.every(p=>typeof p.id==='string'&&typeof p.name==='string'&&p.name.trim().length>0);
+ const validPayments=(trip.payments||[]).every(p=>names.has(p.from)&&names.has(p.to)&&p.from!==p.to&&Number.isSafeInteger(p.cents)&&p.cents>0);
+ const validRates=Object.entries(trip.rates||{}).every(([c,r])=>/^[A-Z]{3}$/.test(c)&&Number.isFinite(r)&&r>0);
+ const canImport=!invalid.length&&validPeople&&validPayments&&validRates&&trip.expenses.length<=2000&&(trip.payments||[]).length<=2000;
+ note.textContent=canImport?'Vorschau erfolgreich. Die Reise kann als separate Kopie importiert werden.':'Import gesperrt: Bitte Personen, Aufteilungen, Beträge, Kurse oder Zahlungen prüfen.';
+ $('importExecute').disabled=!canImport;
+ info.append(note);
+}
+importFile.addEventListener('change',async()=>{
+ importBackup=null;importTrip.replaceChildren();importTrip.disabled=true;importPreview.replaceChildren();
+ const file=importFile.files?.[0];if(!file)return;
+ try{
+  if(file.size>5_000_000)throw new Error('Datei ist grösser als 5 MB.');
+  const data=JSON.parse(await file.text());
+  if(data.version!==1||!Array.isArray(data.trips)||data.trips.length>100)throw new Error('Unbekanntes Sicherungsformat.');
+  for(const t of data.trips){
+   if(!t||typeof t.name!=='string'||!Array.isArray(t.people)||!Array.isArray(t.expenses)||typeof t.currency!=='string'||t.people.length>1000||t.expenses.length>10000)throw new Error('Ungültige Reisedaten.');
+  }
+  importBackup=data;
+  data.trips.forEach((trip,i)=>{const opt=document.createElement('option');opt.value=String(i);opt.textContent=trip.name;importTrip.append(opt);});
+  importTrip.disabled=false;renderImportPreview();
+ }catch(error){importPreview.textContent='Datei konnte nicht geprüft werden: '+error.message;}
+});
+importTrip.addEventListener('change',renderImportPreview);
+$('importExecute').addEventListener('click',async()=>{
+ const trip=importBackup?.trips?.[Number(importTrip.value)];if(!trip||$('importExecute').disabled)return;
+ if(!confirm('Reise „'+trip.name+'“ mit '+trip.people.length+' Personen und '+trip.expenses.length+' Ausgaben als NEUE Reise in Ferienkasse 1.3 importieren? Bestehende Reisen werden nicht überschrieben.'))return;
+ $('importExecute').disabled=true;$('importStatus').textContent='Import läuft …';
+ try{
+  const {data,error}=await client.rpc('fk_import_legacy_trip',{p_trip:trip});
+  if(error)throw error;
+  $('importStatus').textContent='Import erfolgreich. Neue Reise wurde erstellt.';
+  await refresh();
+  const {data:created,error:lookupError}=await client.from('fk_trips').select('id,name,currency,owner_id').eq('id',data).single();
+  if(!lookupError&&created)await openTrip(created);
+ }catch(error){$('importStatus').textContent='Import fehlgeschlagen (keine Teilübernahme): '+error.message;$('importExecute').disabled=false;}
+});
+
+const invitationToken=new URLSearchParams(location.search).get('invite');
+const status=message=>{$('status').textContent=message;};
+const showSignedOut=()=>{stopRealtime();$('account').textContent='Nicht angemeldet.';for(const id of ['workspace','results','detail','migration'])$(id).hidden=true;$('login').hidden=false;status('Bitte zuerst mit Magic Link anmelden.');};
+$('login').addEventListener('click',()=>{location.href='./auth.html';});
+function line(parent,primary,secondary){const row=document.createElement('div');row.className='item';const info=document.createElement('div');const strong=document.createElement('strong');strong.textContent=primary;info.append(strong);if(secondary){const sub=document.createElement('div');sub.className='sub';sub.textContent=secondary;info.append(sub);}row.append(info);parent.append(row);return row;}
+
+function stopRealtime(){
+ if(realtimeTimer!==null){clearTimeout(realtimeTimer);realtimeTimer=null;}
+ if(realtimeChannel){client.removeChannel(realtimeChannel);realtimeChannel=null;}
+ realtimeTripId=null;
+ if($('realtimeStatus'))$('realtimeStatus').textContent='Automatische Synchronisierung nicht verbunden.';
+}
+function queueRealtimeRefresh(){
+ if(realtimeTimer!==null)clearTimeout(realtimeTimer);
+ realtimeTimer=setTimeout(async()=>{
+  realtimeTimer=null;
+  if(!selected||selected.id!==realtimeTripId)return;
+  if(realtimeLoading){realtimeQueued=true;return;}
+  realtimeLoading=true;
+  try{await loadDetail();}finally{
+   realtimeLoading=false;
+   if(realtimeQueued){realtimeQueued=false;queueRealtimeRefresh();}
+  }
+ },500);
+}
+function startRealtime(tripId){
+ if(realtimeChannel&&realtimeTripId===tripId)return;
+ stopRealtime();
+ realtimeTripId=tripId;
+ const channel=client.channel('ferienkasse-trip-'+tripId);
+ for(const table of ['fk_people','fk_expenses','fk_settlements','fk_categories','fk_rates']){
+  channel.on('postgres_changes',{event:'*',schema:'public',table,filter:'trip_id=eq.'+tripId},queueRealtimeRefresh);
+ }
+ realtimeChannel=channel;
+ $('realtimeStatus').textContent='Automatische Synchronisierung wird verbunden …';
+ channel.subscribe((state)=>{
+  if(realtimeChannel!==channel)return;
+  if(state==='SUBSCRIBED'){$('realtimeStatus').textContent='Automatische Synchronisierung aktiv.';queueRealtimeRefresh();}
+  else if(state==='CHANNEL_ERROR'||state==='TIMED_OUT')$('realtimeStatus').textContent='Synchronisierung unterbrochen – bitte Aktualisieren verwenden.';
+  else if(state==='CLOSED')$('realtimeStatus').textContent='Synchronisierung getrennt.';
+ });
+}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&selected)queueRealtimeRefresh();});
+
+async function refresh(){
+ status('Reisen werden geladen …');
+ const {data,error}=await client.from('fk_trips').select('id,name,currency,created_at,owner_id').order('created_at',{ascending:false});
+ if(error){status('Laden fehlgeschlagen: '+error.message);return;}
+ $('trips').replaceChildren();
+ if(!data.length){const p=document.createElement('p');p.className='muted';p.textContent='Noch keine Reisen vorhanden.';$('trips').append(p);}
+ for(const trip of data){const row=line($('trips'),trip.name,trip.currency+' · '+new Date(trip.created_at).toLocaleDateString('de-CH'));const btn=document.createElement('button');btn.textContent='Öffnen';btn.className='secondary';btn.addEventListener('click',()=>openTrip(trip));row.append(btn);}
+ status(data.length+' Reise(n) aus Supabase geladen.');
+ if(selected){const match=data.find(t=>t.id===selected.id);if(match)await openTrip(match);else{stopRealtime();$('detail').hidden=true;selected=null;}}
+}
+async function openTrip(trip){
+ if(selected?.id!==trip.id){stopRealtime();resetExpenseEdit();}selected=trip;$('detail').hidden=false;$('triptitle').textContent=trip.name+' ('+trip.currency+')';
+ await loadDetail();
+ startRealtime(trip.id);
+ const {data:{user}}=await client.auth.getUser();$('createInvite').hidden=user?.id!==trip.owner_id;
+ $('inviteLink').value='';$('copyInvite').hidden=true;$('inviteStatus').textContent='';
+ $('detail').scrollIntoView({behavior:'smooth',block:'start'});
+}
+async function loadDetail(){
+ if(!selected)return;
+ const tripId=selected.id;
+ const [pr,er,cr,rr]=await Promise.all([client.from('fk_people').select('id,name').eq('trip_id',tripId).order('name'),client.from('fk_expenses').select('id,description,amount_cents,expense_date,person_id,currency,category,original_amount_cents,original_currency,exchange_rate').eq('trip_id',tripId).order('expense_date',{ascending:false}),client.from('fk_categories').select('id,name').eq('trip_id',tripId).order('name'),client.from('fk_rates').select('currency,rate,rate_date').eq('trip_id',tripId).order('currency')]);
+ if(selected?.id!==tripId)return;
+ if(pr.error||er.error||cr.error||rr.error){status('Reisedaten konnten nicht geladen werden: '+(pr.error||er.error||cr.error||rr.error).message+'. Bitte supabase/currencies.sql prüfen.');return;}
+ const sr=await client.from('fk_expense_splits').select('expense_id,person_id,amount_cents').in('expense_id',er.data.length?er.data.map(e=>e.id):['00000000-0000-0000-0000-000000000000']);
+ if(sr.error){status('Aufteilungen konnten nicht geladen werden: '+sr.error.message);return;}
+ const payResult=await client.from('fk_settlements').select('id,from_person_id,to_person_id,amount_cents,paid_on').eq('trip_id',tripId).order('paid_on',{ascending:false});
+ if(payResult.error){status('Zahlungen konnten nicht geladen werden: '+payResult.error.message);return;}
+ payments=payResult.data;splits=sr.data;people=pr.data;reportExpenses=er.data;categories=cr.data;rates=rr.data;renderCategories();renderRates();$('people').replaceChildren();$('payer').replaceChildren();$('splitPeople').replaceChildren();
+ for(const p of people){line($('people'),p.name);const option=document.createElement('option');option.value=p.id;option.textContent=p.name;$('payer').append(option);}
+ if(!people.length)line($('people'),'Noch keine Personen erfasst.');
+ for(const p of people){const label=document.createElement('label');const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.value=p.id;checkbox.checked=true;label.append(checkbox,document.createTextNode(' '+p.name));$('splitPeople').append(label);}
+ $('paymentFrom').replaceChildren();$('paymentTo').replaceChildren();$('paymentHistory').replaceChildren();
+ for(const p of people)for(const id of ['paymentFrom','paymentTo']){const o=document.createElement('option');o.value=p.id;o.textContent=p.name;$(id).append(o);}
+ $('paymentSave').disabled=people.length<2;
+ for(const p of payments){
+  const from=people.find(x=>x.id===p.from_person_id)?.name||'Unbekannt',to=people.find(x=>x.id===p.to_person_id)?.name||'Unbekannt';
+  const row=line($('paymentHistory'),from+' → '+to,(p.amount_cents/100).toFixed(2)+' '+selected.currency+' · '+p.paid_on);
+  const btn=document.createElement('button');btn.type='button';btn.className='secondary';btn.textContent='Rückgängig';
+  btn.addEventListener('click',async()=>{
+   if(!confirm('Erfasste Zahlung wirklich entfernen?'))return;
+   btn.disabled=true;const {data,error}=await client.from('fk_settlements').delete().eq('id',p.id).eq('trip_id',tripId).select('id');
+   if(error||!data?.length){$('paymentStatus').textContent='Entfernen fehlgeschlagen: '+(error?.message||'Keine Zahlung entfernt');btn.disabled=false;return;}
+   await loadDetail();$('paymentStatus').textContent='Zahlung entfernt.';
+  });row.append(btn);
+ }
+ if(!payments.length)line($('paymentHistory'),'Noch keine Zahlungen erfasst.');
+ $('expenses').replaceChildren();
+ for(const e of er.data){
+ const payer=people.find(p=>p.id===e.person_id)?.name||'Unbekannt';
+ const portions=splits.filter(s=>s.expense_id===e.id);
+ const portionText=portions.length?' · Aufgeteilt auf '+portions.map(s=>people.find(p=>p.id===s.person_id)?.name+' '+(s.amount_cents/100).toFixed(2)).join(', '):' · Noch nicht aufgeteilt';
+ const originalText=(e.original_currency&&e.original_currency!==selected.currency)?' · Original '+(e.original_amount_cents/100).toFixed(2)+' '+e.original_currency+' (Kurs '+e.exchange_rate+')':'';
+ const row=line($('expenses'),e.description,(e.amount_cents/100).toLocaleString('de-CH',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+e.currency+originalText+' · '+(e.category||'Diverses')+' · '+payer+' · '+e.expense_date+portionText);
+ const edit=document.createElement('button');edit.type='button';edit.className='secondary';edit.textContent='Bearbeiten';
+ edit.addEventListener('click',()=>{
+  showView('new');editingExpenseId=e.id;const ids=splits.filter(s=>s.expense_id===e.id).map(s=>s.person_id);for(const box of $('splitPeople').querySelectorAll('input'))box.checked=ids.length?ids.includes(box.value):true;$('description').value=e.description;$('amount').value=((e.original_amount_cents??e.amount_cents)/100).toFixed(2);$('expenseCurrency').value=e.original_currency||selected.currency;updateExchangePreview();$('payer').value=e.person_id;$('date').value=e.expense_date;$('expenseCategory').value=e.category||'Diverses';
+  $('expensesave').textContent='Änderungen speichern';$('cancelEdit').hidden=false;$('expenseStatus').textContent='Ausgabe bearbeiten: '+e.description;
+  $('expenseform').scrollIntoView({behavior:'smooth',block:'center'});
+ });
+ const del=document.createElement('button');del.type='button';del.className='secondary';del.textContent='Löschen';
+ del.addEventListener('click',async()=>{
+  if(!confirm('Ausgabe „'+e.description+'“ wirklich endgültig löschen?'))return;
+  del.disabled=true;$('expenseStatus').textContent='Ausgabe wird gelöscht …';
   try{
-    const providers=[
-      {name:'Frankfurter',url:'https://api.frankfurter.dev/v1/latest?base='+encodeURIComponent(base)},
-      {name:'Frankfurter (Alternativadresse)',url:'https://api.frankfurter.app/latest?from='+encodeURIComponent(base)}
-    ];
-    let data=null,source='',errors=[];
-    for(const p of providers){
-      try{
-        const response=await fetch(p.url,{cache:'no-store',mode:'cors'});
-        if(!response.ok)throw Error('HTTP '+response.status);
-        const candidate=await response.json();
-        if(!candidate||!candidate.rates||!candidate.date)throw Error('Antwort ohne Kursdaten');
-        data=candidate;source=p.name;break;
-      }catch(err){errors.push(p.name+': '+err.message);}
-    }
-    if(!data)throw Error(errors.join(' / '));
-    const next={...active.rates};let updated=0,unavailable=[];
-    for(const currency of Object.keys(next)){
-      if(currency===base)continue;
-      const perBase=Number(data.rates[currency]);
-      if(Number.isFinite(perBase)&&perBase>0){next[currency]=1/perBase;updated++;}
-      else unavailable.push(currency);
-    }
-    if(!updated){status.textContent='Keine passenden Fremdwährungen im Kursdienst gefunden.';return;}
-    if(!confirm('Referenzkurse vom '+data.date+' übernehmen ('+updated+' Währungen)? Bereits erfasste Ausgaben bleiben unverändert.')){
-      status.textContent='Aktualisierung abgebrochen; bisherige Kurse bleiben erhalten.';return;
-    }
-    active.rates=next;active.rateDate=data.date;save();render();
-    status.textContent='Aktualisiert: '+data.date+' · '+source+' · '+updated+' Währungen'+(unavailable.length?' · Nicht verfügbar: '+unavailable.join(', '):'');
-  }catch(err){
-    status.textContent='Kursabruf fehlgeschlagen: '+err.message+' – gespeicherte Kurse bleiben erhalten.';
-    alert(status.textContent);
-  }finally{btn.disabled=false;}
-};
-function renderStats(t){let byDay={},byPerson={};let sum=0;for(const e of t.expenses){const val=cents(e.amount*e.rate/100);sum+=val;byDay[e.date]=(byDay[e.date]||0)+val;byPerson[e.payer]=(byPerson[e.payer]||0)+val;}$('statsSummary').textContent=`${t.expenses.length} Ausgaben · ${money(sum,t.currency)}${t.budget?' · Budget '+money(t.budget,t.currency)+' · Rest '+money(t.budget-sum,t.currency):''}`;function bars(obj,target,mapLabel){let entries=Object.entries(obj).sort((a,b)=>a[0].localeCompare(b[0]));let max=Math.max(1,...entries.map(([,v])=>v));$(target).innerHTML=entries.map(([k,v])=>`<div class="category"><div><span>${esc(mapLabel(k))}</span><b>${money(v,t.currency)}</b></div><div class="bar"><div style="width:${Math.min(100,100*v/max)}%"></div></div></div>`).join('')||'<p class="muted">Noch keine Ausgaben.</p>';}bars(byDay,'dayChart',x=>x);bars(byPerson,'personChart',x=>nameOf(t,x));}
-function downloadBlob(blob,filename){let url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);}
-$('csvBtn').onclick=()=>{let t=active;let lines=[['Datum','Beschreibung','Kategorie','Bezahlt von','Betrag Original','Währung','Kurs zur Abrechnungswährung','Betrag Abrechnung','Abrechnungswährung','Teilnehmer','Individuelle Aufteilung']];for(const e of t.expenses){lines.push([e.date,e.name,e.category||'Diverses',nameOf(t,e.payer),(e.amount/100).toFixed(2),e.currency,e.rate,(cents(e.amount*e.rate/100)/100).toFixed(2),t.currency,e.shares.map(id=>nameOf(t,id)).join(', '),e.custom?e.shares.map(id=>nameOf(t,id)+': '+(e.custom[id]/100).toFixed(2)).join('; '):'']);}lines.push([]);lines.push(['Offene Überweisungen']);for(const p of compute(t).transfers)lines.push([nameOf(t,p.from),nameOf(t,p.to),(p.cents/100).toFixed(2),t.currency]);lines.push([]);lines.push(['Bereits bezahlte Überweisungen']);for(const p of t.payments||[])lines.push([nameOf(t,p.from),nameOf(t,p.to),(p.cents/100).toFixed(2),t.currency,p.date||'']);const csv='\ufeff'+lines.map(row=>row.map(asCSV).join(';')).join('\r\n');downloadBlob(new Blob([csv],{type:'text/csv;charset=utf-8'}),'ferienkasse-'+today()+'.csv');};
-render();if('serviceWorker' in navigator&&location.protocol==='https:')navigator.serviceWorker.register('./sw.js').catch(()=>showNotice('Offline-Installation fehlgeschlagen. Bitte die Seite neu laden.'));if(location.protocol==='file:')showNotice('Für die Installation auf dem iPhone muss die App über HTTPS bereitgestellt werden, nicht direkt als Datei.');
+   const {data,error}=await client.from('fk_expenses').delete().eq('id',e.id).eq('trip_id',tripId).select('id');
+   if(error)throw error;if(!data?.length)throw new Error('Keine Ausgabe gelöscht. Bitte Berechtigungen prüfen.');
+   if(editingExpenseId===e.id)resetExpenseEdit();await loadDetail();$('expenseStatus').textContent='Ausgabe gelöscht.';
+  }catch(error){$('expenseStatus').textContent='Löschen fehlgeschlagen: '+error.message;del.disabled=false;}
+ });
+ row.append(edit,del);
+}
+ if(!er.data.length)line($('expenses'),'Noch keine Ausgaben erfasst.');
+ renderBalances(er.data);
+ $('expensesave').disabled=!people.length;
+ status('Reisedaten aus Supabase geladen.');
+}
+
+function renderBalances(expenses){
+ const money=cents=>(cents/100).toLocaleString('de-CH',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+selected.currency;
+ const balance=new Map(people.map(p=>[p.id,{name:p.name,paid:0,share:0}]));
+ let total=0,unallocated=0,unallocatedCount=0;
+ for(const e of expenses){
+  const portions=splits.filter(s=>s.expense_id===e.id);
+  const sum=portions.reduce((n,s)=>n+s.amount_cents,0);
+  if(!portions.length||sum!==e.amount_cents||!balance.has(e.person_id)||portions.some(s=>!balance.has(s.person_id))){
+   unallocated+=e.amount_cents;unallocatedCount++;continue;
+  }
+  total+=e.amount_cents;
+  balance.get(e.person_id).paid+=e.amount_cents;
+  for(const s of portions)balance.get(s.person_id).share+=s.amount_cents;
+ }
+ $('totalExpenses').textContent=money(total);
+ $('unallocatedExpenses').textContent=unallocatedCount?unallocatedCount+' Ausgabe(n) ohne gültige Aufteilung: '+money(unallocated)+' (nicht eingerechnet)':'Alle Ausgaben sind zugeordnet.';
+ $('balances').replaceChildren();$('settlements').replaceChildren();
+ for(const p of payments){if(balance.has(p.from_person_id)&&balance.has(p.to_person_id)){balance.get(p.from_person_id).paid+=p.amount_cents;balance.get(p.to_person_id).paid-=p.amount_cents;}}
+ const creditors=[],debtors=[];
+ for(const p of people){
+  const b=balance.get(p.id),net=b.paid-b.share;
+  line($('balances'),p.name,'Netto bezahlt (inkl. Ausgleich) '+money(b.paid)+' · Anteil '+money(b.share)+' · Offener Saldo '+(net>0?'+':'')+money(net));
+  if(net>0)creditors.push({name:p.name,amount:net});
+  if(net<0)debtors.push({name:p.name,amount:-net});
+ }
+ creditors.sort((a,b)=>b.amount-a.amount);debtors.sort((a,b)=>b.amount-a.amount);
+ let i=0,k=0;
+ while(i<debtors.length&&k<creditors.length){
+  const value=Math.min(debtors[i].amount,creditors[k].amount);
+  line($('settlements'),debtors[i].name+' → '+creditors[k].name,money(value));
+  debtors[i].amount-=value;creditors[k].amount-=value;
+  if(!debtors[i].amount)i++;
+  if(!creditors[k].amount)k++;
+ }
+ if(!people.length)line($('balances'),'Noch keine Personen vorhanden.');
+ if(!$('settlements').children.length)line($('settlements'),'Keine Ausgleichszahlungen nötig.');
+}
+
+$('paymentForm').addEventListener('submit',async event=>{
+ event.preventDefault();const button=$('paymentSave');button.disabled=true;
+ try{
+  if(!selected)throw new Error('Bitte Reise öffnen.');
+  const from=$('paymentFrom').value,to=$('paymentTo').value;
+  if(!from||!to||from===to)throw new Error('Zwei unterschiedliche Personen auswählen.');
+  const raw=$('paymentAmount').value.trim().replace(',','.');
+  if(!/^[0-9]+(?:\.[0-9]{1,2})?$/.test(raw))throw new Error('Ungültiger Betrag.');
+  const cents=Math.round(Number(raw)*100);
+  if(!Number.isSafeInteger(cents)||cents<=0)throw new Error('Ungültiger Betrag.');
+  if(!$('paymentDate').value)throw new Error('Bitte Zahlungsdatum wählen.');
+  const {error}=await client.from('fk_settlements').insert({trip_id:selected.id,from_person_id:from,to_person_id:to,amount_cents:cents,paid_on:$('paymentDate').value});
+  if(error)throw error;
+  $('paymentAmount').value='';await loadDetail();$('paymentStatus').textContent='Ausgleichszahlung gespeichert.';
+ }catch(error){$('paymentStatus').textContent='Zahlung konnte nicht gespeichert werden: '+error.message;}
+ finally{button.disabled=false;}
+});
+$('paymentDate').value=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,10);
+
+function renderCategories(){
+ const select=$('expenseCategory'),old=select.value;select.replaceChildren();$('categoryList').replaceChildren();
+ for(const cat of categories){
+  const opt=document.createElement('option');opt.value=cat.name;opt.textContent=cat.name;select.append(opt);
+  const used=reportExpenses.some(e=>(e.category||'Diverses')===cat.name);
+  const row=line($('categoryList'),cat.name,used?'In Ausgaben verwendet':'Noch nicht verwendet');
+  const rename=document.createElement('button');rename.type='button';rename.className='secondary';rename.textContent='Umbenennen';
+  rename.addEventListener('click',async()=>{
+   const value=prompt('Neuer Kategoriename',cat.name)?.trim();
+   if(!value||value===cat.name)return;
+   if(value.length>60){$('categoryStatus').textContent='Maximal 60 Zeichen.';return;}
+   const {error}=await client.from('fk_categories').update({name:value}).eq('id',cat.id).eq('trip_id',selected.id);
+   if(error){$('categoryStatus').textContent='Umbenennen fehlgeschlagen: '+error.message;return;}
+   await loadDetail();$('categoryStatus').textContent='Kategorie umbenannt.';
+  });row.append(rename);
+  const del=document.createElement('button');del.type='button';del.className='secondary';del.textContent='Löschen';del.disabled=used;
+  del.addEventListener('click',async()=>{
+   if(!confirm('Kategorie „'+cat.name+'“ löschen?'))return;
+   const {error}=await client.from('fk_categories').delete().eq('id',cat.id).eq('trip_id',selected.id);
+   if(error){$('categoryStatus').textContent='Löschen fehlgeschlagen: '+error.message;return;}
+   await loadDetail();$('categoryStatus').textContent='Kategorie gelöscht.';
+  });row.append(del);
+ }
+ select.value=categories.some(c=>c.name===old)?old:(categories.some(c=>c.name==='Diverses')?'Diverses':categories[0]?.name||'');
+}
+$('categoryForm').addEventListener('submit',async event=>{
+ event.preventDefault();if(!selected)return;
+ const name=$('categoryName').value.trim();
+ if(!name||name.length>60)return;
+ const {error}=await client.from('fk_categories').insert({trip_id:selected.id,name});
+ if(error){$('categoryStatus').textContent='Hinzufügen fehlgeschlagen: '+error.message;return;}
+ $('categoryName').value='';await loadDetail();$('categoryStatus').textContent='Kategorie hinzugefügt.';
+});
+
+
+function renderRates(){
+ const base=selected?.currency;if(!base)return;
+ const currencies=new Set([base,...rates.map(r=>r.currency)]);
+ const previous=$('expenseCurrency').value;
+ $('expenseCurrency').replaceChildren();
+ for(const c of [...currencies].sort()){
+  const option=document.createElement('option');option.value=c;option.textContent=c;$('expenseCurrency').append(option);
+ }
+ $('expenseCurrency').value=currencies.has(previous)?previous:base;
+ $('rateList').replaceChildren();
+ for(const rate of rates){
+  const row=line($('rateList'),rate.currency+' · 1 '+rate.currency+' = '+Number(rate.rate).toLocaleString('de-CH',{maximumFractionDigits:12})+' '+base,rate.currency===base?'Basiswährung':rate.rate_date?'Referenzkurs vom '+rate.rate_date:'Manuell festgelegt');
+  if(rate.currency!==base){
+   const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='Kurs ändern';
+   button.addEventListener('click',()=>{$('rateCurrency').value=rate.currency;$('rateValue').value=rate.rate;$('rateValue').focus();});
+   row.append(button);
+  }
+ }
+ updateExchangePreview();
+}
+function updateExchangePreview(){
+ if(!selected)return;
+ const currency=$('expenseCurrency').value||selected.currency;
+ const raw=$('amount').value.trim();
+ const amount=Number(raw);
+ const historical=editingExpenseId?reportExpenses.find(e=>e.id===editingExpenseId):null;
+ const rate=historical?.original_currency===currency?Number(historical.exchange_rate):(currency===selected.currency?1:Number(rates.find(r=>r.currency===currency)?.rate));
+ $('exchangePreview').textContent=Number.isFinite(rate)&&rate>0
+  ?'1 '+currency+' = '+rate.toLocaleString('de-CH',{maximumFractionDigits:12})+' '+selected.currency+(Number.isFinite(amount)&&amount>0?' · ≈ '+(Math.round(amount*100*rate)/100).toLocaleString('de-CH',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+selected.currency:'')+(historical?.original_currency===currency?' · gespeicherter Buchungskurs':'')
+  :'Kein gültiger Wechselkurs vorhanden.';
+}
+$('expenseCurrency').addEventListener('change',updateExchangePreview);
+$('amount').addEventListener('input',updateExchangePreview);
+$('rateForm').addEventListener('submit',async event=>{
+ event.preventDefault();if(!selected)return;
+ const currency=$('rateCurrency').value.trim().toUpperCase(),rate=Number($('rateValue').value);
+ if(!/^[A-Z]{3}$/.test(currency)||!Number.isFinite(rate)||rate<=0){$('rateStatus').textContent='Bitte gültigen Währungscode und positiven Kurs eingeben.';return;}
+ if(currency===selected.currency&&rate!==1){$('rateStatus').textContent='Der Kurs der Basiswährung muss 1 sein.';return;}
+ const btn=$('rateForm').querySelector('button');btn.disabled=true;
+ try{
+  const {error}=await client.from('fk_rates').upsert({trip_id:selected.id,currency,rate,rate_date:null},{onConflict:'trip_id,currency'});
+  if(error)throw error;
+  await loadDetail();$('rateStatus').textContent='Kurs für '+currency+' gespeichert. Bestehende Ausgaben bleiben unverändert.';$('rateCurrency').value='';$('rateValue').value='';
+ }catch(error){$('rateStatus').textContent='Speichern fehlgeschlagen: '+error.message;}finally{btn.disabled=false;}
+});
+$('fetchRates').addEventListener('click',async()=>{
+ if(!selected)return;
+ const btn=$('fetchRates'),base=selected.currency;btn.disabled=true;$('rateStatus').textContent='Referenzkurse werden geladen …';
+ try{
+  let data=null,source='',errors=[];
+  for(const provider of [{name:'Frankfurter',url:'https://api.frankfurter.dev/v1/latest?base='+encodeURIComponent(base)},{name:'Frankfurter (Alternative)',url:'https://api.frankfurter.app/latest?from='+encodeURIComponent(base)}]){
+   try{const response=await fetch(provider.url,{cache:'no-store',mode:'cors'});if(!response.ok)throw Error('HTTP '+response.status);const candidate=await response.json();if(!candidate?.rates||!candidate?.date)throw Error('Ungültige Antwort');data=candidate;source=provider.name;break;}catch(error){errors.push(provider.name+': '+error.message);}
+  }
+  if(!data)throw Error(errors.join(' / '));
+  const changes=rates.filter(r=>r.currency!==base).map(r=>({currency:r.currency,perBase:Number(data.rates[r.currency])})).filter(x=>Number.isFinite(x.perBase)&&x.perBase>0);
+  if(!changes.length){$('rateStatus').textContent='Keine passenden Referenzkurse gefunden. Bitte zuerst Fremdwährungen hinzufügen.';return;}
+  if(!confirm('Referenzkurse vom '+data.date+' für '+changes.length+' Währung(en) übernehmen? Bestehende Ausgaben bleiben unverändert.')){$('rateStatus').textContent='Aktualisierung abgebrochen.';return;}
+  const updates=changes.map(x=>({trip_id:selected.id,currency:x.currency,rate:1/x.perBase,rate_date:data.date}));
+  const {error}=await client.from('fk_rates').upsert(updates,{onConflict:'trip_id,currency'});if(error)throw error;
+  await loadDetail();$('rateStatus').textContent='Referenzkurse aktualisiert: '+data.date+' · '+source;
+ }catch(error){$('rateStatus').textContent='Abruf fehlgeschlagen: '+error.message;}finally{btn.disabled=false;}
+});
+
+function resetExpenseEdit(){
+ editingExpenseId=null;$('expenseform').reset();$('expenseCurrency').value=selected?.currency||'CHF';updateExchangePreview();for(const box of $('splitPeople').querySelectorAll('input'))box.checked=true;$('expensesave').textContent='Ausgabe speichern';$('cancelEdit').hidden=true;
+ $('date').value=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,10);
+}
+$('cancelEdit').addEventListener('click',()=>{resetExpenseEdit();$('expenseStatus').textContent='Bearbeitung abgebrochen.';});
+$('refresh').addEventListener('click',refresh);
+$('createInvite').addEventListener('click',async()=>{
+ if(!selected)return;const button=$('createInvite');button.disabled=true;$('inviteStatus').textContent='Einladungslink wird erstellt …';
+ try{
+  const {data,error}=await client.rpc('fk_create_invitation',{p_trip:selected.id});if(error)throw error;
+  const url=new URL('./index.html',location.href);url.searchParams.set('invite',data);
+  $('inviteLink').value=url.href;$('copyInvite').hidden=false;
+  $('inviteStatus').textContent='Link erstellt. Einmalig nutzbar, 7 Tage gültig. Nur an die gewünschte Person senden.';
+ }catch(error){$('inviteStatus').textContent='Einladung fehlgeschlagen: '+error.message;}
+ finally{button.disabled=false;}
+});
+$('copyInvite').addEventListener('click',async()=>{
+ try{await navigator.clipboard.writeText($('inviteLink').value);$('inviteStatus').textContent='Link kopiert.';}
+ catch(error){$('inviteLink').select();$('inviteStatus').textContent='Bitte markierten Link manuell kopieren.';}
+});
+$('acceptInvite').addEventListener('click',async()=>{
+ if(!invitationToken)return;const button=$('acceptInvite');button.disabled=true;$('inviteMessage').textContent='Einladung wird angenommen …';
+ try{
+  const {data,error}=await client.rpc('fk_accept_invitation',{p_token:invitationToken});if(error)throw error;
+  history.replaceState(null,'',location.pathname);
+  $('invitation').hidden=true;await refresh();
+  $('inviteMessage').textContent='Einladung angenommen.';status('Einladung angenommen. Die gemeinsame Reise erscheint unter Meine Reisen.');
+ }catch(error){$('inviteMessage').textContent='Einladung konnte nicht angenommen werden: '+error.message;button.disabled=false;}
+});
+$('create').addEventListener('submit',async event=>{
+ event.preventDefault();const button=$('save');button.disabled=true;status('Reise wird gespeichert …');
+ try{const {data:{user},error:authError}=await client.auth.getUser();if(authError||!user)throw authError||new Error('Nicht angemeldet');
+ const {error}=await client.from('fk_trips').insert({name:$('name').value.trim(),currency:$('currency').value,owner_id:user.id});
+ if(error)throw error;$('name').value='';await refresh();
+ }catch(error){status('Speichern fehlgeschlagen: '+error.message);}finally{button.disabled=false;}
+});
+$('personform').addEventListener('submit',async event=>{
+ event.preventDefault();if(!selected)return;const button=$('personsave');button.disabled=true;
+ try{const {error}=await client.from('fk_people').insert({trip_id:selected.id,name:$('personname').value.trim()});if(error)throw error;$('personname').value='';await loadDetail();}
+ catch(error){status('Person konnte nicht gespeichert werden: '+error.message);}finally{button.disabled=false;}
+});
+$('expenseform').addEventListener('submit',async event=>{
+ event.preventDefault();const report=message=>{$('expenseStatus').textContent=message;status(message);};if(!selected){report('Bitte zuerst eine Reise öffnen.');return;}if(!people.some(p=>p.id===$('payer').value)){report('Bitte eine zahlende Person auswählen.');return;}if(!$('description').value.trim()){report('Bitte eine Beschreibung eingeben.');return;}if(!$('date').value){report('Bitte ein Datum auswählen.');return;}const button=$('expensesave');button.disabled=true;report('Ausgabe wird gespeichert …');
+ try{const amount=$('amount').value.trim().replace(',','.');if(!/^[0-9]+(?:\.[0-9]{1,2})?$/.test(amount))throw new Error('Bitte Betrag mit maximal zwei Dezimalstellen eingeben.');const cents=Math.round(Number(amount)*100);if(!Number.isSafeInteger(cents)||cents<=0)throw new Error('Ungültiger Betrag.');
+ const participants=Array.from($('splitPeople').querySelectorAll('input:checked')).map(box=>box.value);
+ if(!participants.length)throw new Error('Bitte mindestens eine Person für die Aufteilung auswählen.');
+ const wasEditing=!!editingExpenseId;
+ const response=await client.rpc('fk_save_currency_expense',{
+  p_trip:selected.id,p_expense:editingExpenseId,p_payer:$('payer').value,
+  p_description:$('description').value.trim(),p_original_amount_cents:cents,p_original_currency:$('expenseCurrency').value,p_date:$('date').value,p_people:participants,p_category:$('expenseCategory').value
+ });
+ if(response.error)throw response.error;
+ resetExpenseEdit();await loadDetail();showView('expenses');report(wasEditing?'Ausgabe erfolgreich geändert.':'Ausgabe erfolgreich in Supabase gespeichert.');
+ }catch(error){report('Ausgabe konnte nicht gespeichert werden: '+error.message);}finally{button.disabled=false;}
+});
+$('date').value=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,10);
+async function init(){
+ const {data:{session},error}=await client.auth.getSession();
+ if(error||!session){showSignedOut();if(invitationToken){$('invitation').hidden=false;$('inviteMessage').textContent='Bitte zuerst anmelden. Danach diesen Einladungslink erneut öffnen.';}return;}
+ $('account').textContent='Angemeldet als '+(session.user.email||'Benutzer');
+ $('workspace').hidden=false;$('migration').hidden=false;$('results').hidden=false;$('login').hidden=true;
+ if(invitationToken){$('invitation').hidden=false;$('inviteMessage').textContent='Du wurdest zu einer Reise eingeladen. Mit „Einladung annehmen“ trittst du bei.';}
+ await refresh();
+}
+client.auth.onAuthStateChange(event=>{if(event==='SIGNED_OUT')showSignedOut();});
+init().catch(error=>status('Initialisierung fehlgeschlagen: '+error.message));
