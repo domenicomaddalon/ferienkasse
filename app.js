@@ -240,7 +240,40 @@ async function refresh(){
  if(error){status('Laden fehlgeschlagen: '+error.message);return;}
  $('trips').replaceChildren();
  if(!data.length){const p=document.createElement('p');p.className='muted';p.textContent='Noch keine Reisen vorhanden.';$('trips').append(p);}
- for(const trip of data){const row=line($('trips'),trip.name,trip.currency+' · '+new Date(trip.created_at).toLocaleDateString('de-CH'));const btn=document.createElement('button');btn.textContent='Öffnen';btn.className='secondary';btn.addEventListener('click',()=>openTrip(trip));row.append(btn);}
+ const {data:{user}}=await client.auth.getUser();
+ for(const trip of data){
+  const row=line($('trips'),trip.name,trip.currency+' · '+new Date(trip.created_at).toLocaleDateString('de-CH'));
+  const btn=document.createElement('button');btn.textContent='Öffnen';btn.className='secondary';btn.addEventListener('click',()=>openTrip(trip));row.append(btn);
+  if(user?.id===trip.owner_id){
+   const rename=document.createElement('button');rename.textContent='Umbenennen';rename.className='secondary';
+   rename.addEventListener('click',async()=>{
+    const name=prompt('Neuer Name für die Reise „'+trip.name+'“:',trip.name);
+    if(name===null)return;
+    const value=name.trim();if(!value||value.length>200){alert('Bitte einen gültigen Namen mit maximal 200 Zeichen eingeben.');return;}
+    if(value===trip.name)return;
+    rename.disabled=true;
+    try{
+     const {data:changed,error}=await client.from('fk_trips').update({name:value}).eq('id',trip.id).eq('owner_id',user.id).select('id');
+     if(error)throw error;if(!changed?.length)throw new Error('Keine Berechtigung oder Reise nicht gefunden.');
+     await refresh();status('Reise umbenannt.');
+    }catch(error){status('Umbenennen fehlgeschlagen: '+error.message);rename.disabled=false;}
+   });row.append(rename);
+   const remove=document.createElement('button');remove.textContent='Löschen';remove.className='danger';
+   remove.addEventListener('click',async()=>{
+    const typed=prompt('ACHTUNG: Die Reise „'+trip.name+'“ mit allen Personen, Ausgaben, Zahlungen und Einladungen wird dauerhaft gelöscht. Bitte zur Bestätigung den exakten Reisenamen eingeben:');
+    if(typed===null)return;
+    if(typed!==trip.name){alert('Reisename stimmt nicht überein. Nichts gelöscht.');return;}
+    if(!confirm('Reise „'+trip.name+'“ wirklich UNWIDERRUFLICH löschen? Vorher eine Sicherung erstellen.'))return;
+    remove.disabled=true;
+    try{
+     const {data:deleted,error}=await client.from('fk_trips').delete().eq('id',trip.id).eq('owner_id',user.id).select('id');
+     if(error)throw error;if(!deleted?.length)throw new Error('Keine Berechtigung oder Reise nicht gefunden.');
+     if(selected?.id===trip.id){stopRealtime();selected=null;$('detail').hidden=true;}
+     await refresh();status('Reise „'+trip.name+'“ wurde gelöscht.');
+    }catch(error){status('Löschen fehlgeschlagen: '+error.message);remove.disabled=false;}
+   });row.append(remove);
+  }
+ }
  status(data.length+' Reise(n) aus Supabase geladen.');
  if(selected){const match=data.find(t=>t.id===selected.id);if(match)await openTrip(match);else{stopRealtime();$('detail').hidden=true;selected=null;}}
 }
