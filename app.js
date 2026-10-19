@@ -192,7 +192,10 @@ $('importExecute').addEventListener('click',async()=>{
 
 const invitationToken=new URLSearchParams(location.search).get('invite');
 const status=message=>{$('status').textContent=message;};
-const showSignedOut=()=>{stopRealtime();$('account').textContent='Nicht angemeldet.';for(const id of ['workspace','results','detail','migration'])$(id).hidden=true;$('login').hidden=false;status('Bitte zuerst mit Magic Link anmelden.');};
+const showSignedOut=()=>{stopRealtime();selected=null;people=[];splits=[];payments=[];categories=[];rates=[];reportExpenses=[];$('trips').replaceChildren();$('account').textContent='Nicht angemeldet.';for(const id of ['workspace','results','detail','migration'])$(id).hidden=true;$('login').hidden=false;$('logout').hidden=true;status('Bitte anmelden.');};
+function showTripOverview(){stopRealtime();selected=null;$('detail').hidden=true;$('workspace').hidden=false;$('results').hidden=false;document.querySelector('#workspace details').open=false;window.scrollTo({top:0,behavior:'smooth'});}
+$('backToTrips').addEventListener('click',showTripOverview);
+$('logout').addEventListener('click',async()=>{const button=$('logout');button.disabled=true;try{const {error}=await client.auth.signOut();if(error)throw error;showSignedOut();location.href='./auth.html';}catch(error){status('Abmelden fehlgeschlagen: '+error.message);}finally{button.disabled=false;}});
 $('login').addEventListener('click',()=>{location.href='./auth.html';});
 function line(parent,primary,secondary){const row=document.createElement('div');row.className='item';const info=document.createElement('div');const strong=document.createElement('strong');strong.textContent=primary;info.append(strong);if(secondary){const sub=document.createElement('div');sub.className='sub';sub.textContent=secondary;info.append(sub);}row.append(info);parent.append(row);return row;}
 
@@ -275,10 +278,10 @@ async function refresh(){
   }
  }
  status(data.length+' Reise(n) aus Supabase geladen.');
- if(selected){const match=data.find(t=>t.id===selected.id);if(match)await openTrip(match);else{stopRealtime();$('detail').hidden=true;selected=null;}}
+ if(selected){const match=data.find(t=>t.id===selected.id);if(match)await openTrip(match);else{stopRealtime();$('detail').hidden=true;selected=null;$('workspace').hidden=false;$('results').hidden=false;}}
 }
 async function openTrip(trip){
- if(selected?.id!==trip.id){stopRealtime();resetExpenseEdit();}selected=trip;$('detail').hidden=false;$('triptitle').textContent=trip.name+' ('+trip.currency+')';
+ if(selected?.id!==trip.id){stopRealtime();resetExpenseEdit();}selected=trip;$('detail').hidden=false;$('workspace').hidden=true;$('results').hidden=true;$('triptitle').textContent=trip.name+' ('+trip.currency+')';
  await loadDetail();
  startRealtime(trip.id);
  const {data:{user}}=await client.auth.getUser();$('createInvite').hidden=user?.id!==trip.owner_id;
@@ -560,7 +563,7 @@ async function init(){
  const {data:{session},error}=await client.auth.getSession();
  if(error||!session){showSignedOut();if(invitationToken){$('invitation').hidden=false;$('inviteMessage').textContent='Bitte zuerst anmelden. Danach diesen Einladungslink erneut öffnen.';}return;}
  $('account').textContent='Angemeldet als '+(session.user.email||'Benutzer');
- $('workspace').hidden=false;$('migration').hidden=false;$('results').hidden=false;$('login').hidden=true;
+ $('workspace').hidden=false;$('results').hidden=false;$('login').hidden=true;$('logout').hidden=false;
  if(invitationToken){$('invitation').hidden=false;$('inviteMessage').textContent='Du wurdest zu einer Reise eingeladen. Mit „Einladung annehmen“ trittst du bei.';}
  await refresh();
 }
