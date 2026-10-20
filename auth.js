@@ -5,17 +5,23 @@ import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './supabase/project-confi
 const client=createClient(SUPABASE_URL,SUPABASE_PUBLISHABLE_KEY,{auth:{flowType:'implicit',storageKey:'ferienkasse.v1.3.auth.test',detectSessionInUrl:true}});
 const $=id=>document.getElementById(id);
 let email='';
+const invite=new URLSearchParams(location.search).get('invite');
+const returnUrl=()=>new URL('./index.html'+(invite?'?invite='+encodeURIComponent(invite):''),location.href).href;
+const authRedirect=()=>new URL('./auth.html'+(invite?'?invite='+encodeURIComponent(invite):''),location.href).href;
+if(invite)$('inviteHint').hidden=false;
+let redirecting=false;
+function continueToTrip(){if(!invite||redirecting)return;redirecting=true;status('Anmeldung erfolgreich. Reise wird geöffnet …');location.replace(returnUrl());}
 const status=message=>{$('status').textContent=message;};
 function show(user){$('signed').hidden=!user;$('login').hidden=!!user;$('passwordLogin').hidden=!!user;$('verify').hidden=true;$('account').textContent=user?.email||'';}
 client.auth.onAuthStateChange((event,session)=>{
- if(event==='SIGNED_IN'){show(session?.user);status('Anmeldung erfolgreich (Test).');}
+ if(event==='SIGNED_IN'){show(session?.user);status('Anmeldung erfolgreich.');continueToTrip();}
  if(event==='SIGNED_OUT'){show(null);status('Abgemeldet.');}
 });
 $('passwordLogin').addEventListener('submit',async event=>{
  event.preventDefault();$('passwordSignIn').disabled=true;status('Anmeldung wird geprüft …');
  try{
   const {data,error}=await client.auth.signInWithPassword({email:$('passwordEmail').value.trim(),password:$('passwordValue').value});
-  if(error)throw error;show(data.user);$('passwordValue').value='';status('Mit Passwort angemeldet.');
+  if(error)throw error;show(data.user);$('passwordValue').value='';status('Mit Passwort angemeldet.');continueToTrip();
  }catch(error){status('Passwort-Anmeldung fehlgeschlagen: '+error.message);}
  finally{$('passwordSignIn').disabled=false;}
 });
@@ -25,11 +31,11 @@ $('passwordSignUp').addEventListener('click',async()=>{
  if(password.length<8){status('Bitte ein Passwort mit mindestens 8 Zeichen eingeben.');return;}
  $('passwordSignUp').disabled=true;status('Konto wird erstellt …');
  try{
-  const {data,error}=await client.auth.signUp({email,password,options:{emailRedirectTo:new URL('./auth.html',location.href).href}});
+  const {data,error}=await client.auth.signUp({email,password,options:{emailRedirectTo:authRedirect()}});
   if(error)throw error;
   $('passwordValue').value='';
-  if(data.session){show(data.user);status('Konto erstellt und angemeldet.');}
-  else status('Registrierung verarbeitet. Falls Supabase eine Bestätigung verlangt, muss zuerst die E-Mail bestätigt werden. Das E-Mail-Limit kann auch die Registrierung verzögern.');
+  if(data.session){show(data.user);status('Konto erstellt und angemeldet.');continueToTrip();}
+  else status('Registrierung erstellt. Bitte bestätige gegebenenfalls deine E-Mail und öffne danach den Einladungslink erneut, um der Reise beizutreten.');
  }catch(error){status('Registrierung fehlgeschlagen: '+error.message);}
  finally{$('passwordSignUp').disabled=false;}
 });
@@ -66,5 +72,5 @@ try{
  if(error)throw error;
  show(session?.user||null);
  if(callbackError)status('Anmeldelink konnte nicht verarbeitet werden: '+callbackError);
- else status(session?.user?'Anmeldung erfolgreich (Test).':'Noch nicht angemeldet. Fordere einen Anmeldelink an.');
+ else {status(session?.user?'Angemeldet.':'Noch nicht angemeldet. Melde dich mit E-Mail und Passwort an oder erstelle ein Konto.');if(session?.user)continueToTrip();}
 }catch(error){show(null);status('Anmeldung konnte nicht abgeschlossen werden: '+error.message);}
