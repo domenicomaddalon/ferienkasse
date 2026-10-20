@@ -191,11 +191,12 @@ $('importExecute').addEventListener('click',async()=>{
 });
 
 const invitationToken=new URLSearchParams(location.search).get('invite');
+const invitationUrl=()=>new URL('./auth.html'+(invitationToken?'?invite='+encodeURIComponent(invitationToken):''),location.href).href;
 const status=message=>{$('status').textContent=message;};
 const showSignedOut=()=>{stopRealtime();selected=null;people=[];splits=[];payments=[];categories=[];rates=[];reportExpenses=[];$('trips').replaceChildren();$('account').textContent='Nicht angemeldet.';for(const id of ['workspace','results','detail','migration'])$(id).hidden=true;$('login').hidden=false;$('logout').hidden=true;status('Bitte anmelden.');};
 function showTripOverview(){stopRealtime();selected=null;$('detail').hidden=true;$('workspace').hidden=false;$('results').hidden=false;document.querySelector('#workspace details').open=false;window.scrollTo({top:0,behavior:'smooth'});}
 $('backToTrips').addEventListener('click',showTripOverview);
-$('logout').addEventListener('click',async()=>{const button=$('logout');button.disabled=true;try{const {error}=await client.auth.signOut();if(error)throw error;showSignedOut();location.href='./auth.html';}catch(error){status('Abmelden fehlgeschlagen: '+error.message);}finally{button.disabled=false;}});
+$('logout').addEventListener('click',async()=>{const button=$('logout');button.disabled=true;try{const {error}=await client.auth.signOut();if(error)throw error;showSignedOut();location.href=invitationUrl();}catch(error){status('Abmelden fehlgeschlagen: '+error.message);}finally{button.disabled=false;}});
 $('login').addEventListener('click',()=>{location.href='./auth.html';});
 function line(parent,primary,secondary){const row=document.createElement('div');row.className='item';const info=document.createElement('div');const strong=document.createElement('strong');strong.textContent=primary;info.append(strong);if(secondary){const sub=document.createElement('div');sub.className='sub';sub.textContent=secondary;info.append(sub);}row.append(info);parent.append(row);return row;}
 
@@ -285,7 +286,7 @@ async function openTrip(trip){
  await loadDetail();
  startRealtime(trip.id);
  const {data:{user}}=await client.auth.getUser();$('createInvite').hidden=user?.id!==trip.owner_id;
- $('inviteLink').value='';$('copyInvite').hidden=true;$('inviteStatus').textContent='';
+ $('inviteLink').value='';$('copyInvite').hidden=true;$('sendInviteEmail').hidden=true;$('inviteStatus').textContent='';
  $('detail').scrollIntoView({behavior:'smooth',block:'start'});
 }
 async function loadDetail(){
@@ -514,10 +515,18 @@ $('createInvite').addEventListener('click',async()=>{
  try{
   const {data,error}=await client.rpc('fk_create_invitation',{p_trip:selected.id});if(error)throw error;
   const url=new URL('./index.html',location.href);url.searchParams.set('invite',data);
-  $('inviteLink').value=url.href;$('copyInvite').hidden=false;
-  $('inviteStatus').textContent='Link erstellt. Einmalig nutzbar, 7 Tage gültig. Nur an die gewünschte Person senden.';
+  $('inviteLink').value=url.href;$('copyInvite').hidden=false;$('sendInviteEmail').hidden=false;
+  $('inviteStatus').textContent='Einladung erstellt (einmalig nutzbar, 7 Tage gültig). E-Mail-Programm öffnen oder Link kopieren.';
  }catch(error){$('inviteStatus').textContent='Einladung fehlgeschlagen: '+error.message;}
  finally{button.disabled=false;}
+});
+$('sendInviteEmail').addEventListener('click',()=>{
+ if(!selected||!$('inviteLink').value){$('inviteStatus').textContent='Bitte zuerst eine Einladung erstellen.';return;}
+ const address=$('inviteEmail').value.trim();if(address&&!$('inviteEmail').checkValidity()){$('inviteStatus').textContent='Bitte eine gültige E-Mail-Adresse eingeben.';return;}
+ const subject='Einladung zur Ferienkasse: '+selected.name;
+ const body='Hallo!\\n\\nIch lade dich zur gemeinsamen Ferienkasse „'+selected.name+'“ ein.\\n\\nÖffne diesen Link, registriere dich mit E-Mail und Passwort oder melde dich mit deinem bestehenden Konto an. Danach wird die Reise für dich freigeschaltet:\\n'+$('inviteLink').value+'\\n\\nDer Link ist einmalig nutzbar und 7 Tage gültig.\\n\\nLiebe Grüsse';
+ location.href='mailto:'+encodeURIComponent(address)+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body.replaceAll('\\n','\n'));
+ $('inviteStatus').textContent='E-Mail-Programm geöffnet. Bitte die vorbereitete Einladung dort selbst senden.';
 });
 $('copyInvite').addEventListener('click',async()=>{
  try{await navigator.clipboard.writeText($('inviteLink').value);$('inviteStatus').textContent='Link kopiert.';}
@@ -566,6 +575,19 @@ async function init(){
  $('workspace').hidden=false;$('results').hidden=false;$('login').hidden=true;$('logout').hidden=false;
  if(invitationToken){$('invitation').hidden=false;$('inviteMessage').textContent='Du wurdest zu einer Reise eingeladen. Mit „Einladung annehmen“ trittst du bei.';}
  await refresh();
+ if(invitationToken){
+  $('invitation').hidden=false;$('inviteMessage').textContent='Deine Einladung wird angenommen …';
+  try{
+   const {data:tripId,error:inviteError}=await client.rpc('fk_accept_invitation',{p_token:invitationToken});
+   if(inviteError)throw inviteError;
+   history.replaceState(null,'',location.pathname);
+   $('invitation').hidden=true;
+   await refresh();
+   const {data:trips,error:tripsError}=await client.from('fk_trips').select('id,name,currency,owner_id').eq('id',tripId).maybeSingle();
+   if(!tripsError&&trips)await openTrip(trips);
+   status('Einladung angenommen. Willkommen in der Ferienkasse!');
+  }catch(error){$('inviteMessage').textContent='Automatischer Beitritt fehlgeschlagen: '+error.message+'. Du kannst die Einladung hier erneut annehmen.';}
+ }
 }
 client.auth.onAuthStateChange(event=>{if(event==='SIGNED_OUT')showSignedOut();});
 init().catch(error=>status('Initialisierung fehlgeschlagen: '+error.message));
