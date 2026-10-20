@@ -524,8 +524,8 @@ $('sendInviteEmail').addEventListener('click',()=>{
  if(!selected||!$('inviteLink').value){$('inviteStatus').textContent='Bitte zuerst eine Einladung erstellen.';return;}
  const address=$('inviteEmail').value.trim();if(address&&!$('inviteEmail').checkValidity()){$('inviteStatus').textContent='Bitte eine gültige E-Mail-Adresse eingeben.';return;}
  const subject='Einladung zur Ferienkasse: '+selected.name;
- const body='Hallo!\\n\\nIch lade dich zur gemeinsamen Ferienkasse „'+selected.name+'“ ein.\\n\\nÖffne diesen Link, registriere dich mit E-Mail und Passwort oder melde dich mit deinem bestehenden Konto an. Danach wird die Reise für dich freigeschaltet:\\n'+$('inviteLink').value+'\\n\\nDer Link ist einmalig nutzbar und 7 Tage gültig.\\n\\nLiebe Grüsse';
- location.href='mailto:'+encodeURIComponent(address)+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body.replaceAll('\\n','\n'));
+ const body=['Hallo!','','Ich lade dich zur gemeinsamen Ferienkasse „'+selected.name+'“ ein.','','Öffne diesen Link, registriere dich mit E-Mail und Passwort oder melde dich mit deinem bestehenden Konto an. Danach wird die Reise für dich freigeschaltet:',$('inviteLink').value,'','Der Link ist einmalig nutzbar und 7 Tage gültig.','','Liebe Grüsse'].join('\n');
+ location.href='mailto:'+encodeURIComponent(address)+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
  $('inviteStatus').textContent='E-Mail-Programm geöffnet. Bitte die vorbereitete Einladung dort selbst senden.';
 });
 $('copyInvite').addEventListener('click',async()=>{
@@ -570,7 +570,7 @@ $('expenseform').addEventListener('submit',async event=>{
 $('date').value=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,10);
 async function init(){
  const {data:{session},error}=await client.auth.getSession();
- if(error||!session){showSignedOut();if(invitationToken){$('invitation').hidden=false;$('inviteMessage').textContent='Bitte zuerst anmelden. Danach diesen Einladungslink erneut öffnen.';}return;}
+ if(error||!session){showSignedOut();if(invitationToken){$('invitation').hidden=false;$('inviteMessage').textContent='Du wurdest eingeladen. Bitte auf „Zur Anmeldung“ klicken und mit E-Mail und Passwort anmelden oder ein Konto erstellen.';}return;}
  $('account').textContent='Angemeldet als '+(session.user.email||'Benutzer');
  $('workspace').hidden=false;$('results').hidden=false;$('login').hidden=true;$('logout').hidden=false;
  if(invitationToken){$('invitation').hidden=false;$('inviteMessage').textContent='Du wurdest zu einer Reise eingeladen. Mit „Einladung annehmen“ trittst du bei.';}
