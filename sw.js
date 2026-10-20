@@ -1,4 +1,4 @@
-const CACHE='ferienkasse-v1.3.2-20261019';
+const CACHE='ferienkasse-v1.3.3-20261020';
 const ASSETS=['./','./index.html','./style.css','./trips-mobile.css','./trips-tabs.css','./app.js','./auth.html','./auth.js','./supabase/project-config.js','./manifest.webmanifest'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('ferienkasse-v1.')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
